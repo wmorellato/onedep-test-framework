@@ -1,0 +1,40 @@
++--------------------------------------------------+
+| exp_method                                       |
++--------------------------------------------------+
+| ELECTRON MICROSCOPY                              |
+| X-RAY DIFFRACTION                                |
+| SOLUTION NMR                                     |
+| ELECTRON CRYSTALLOGRAPHY                         |
+| SOLID-STATE NMR                                  |
+| X-RAY DIFFRACTIONNEUTRON DIFFRACTION             |
+| ELECTRON MICROSCOPYSOLID-STATE NMR               |
+| NEUTRON DIFFRACTION                              |
+| X-RAY DIFFRACTION,NEUTRON DIFFRACTION            |
+| EM-helical,EM                                    |
+| ELECTRON MICROSCOPY,SOLUTION NMR,SOLID-STATE NMR |
+| XRAY                                             |
+| SOLUTION NMR,SOLID-STATE NMR                     |
+| NMR                                              |
+| ELECTRON MICROSCOPY,SOLUTION NMR                 |
+| SOLUTION SCATTERING                              |
+| FIBER DIFFRACTION                                |
+| SOLUTION NMR, THEORETICAL MODEL                  |
+| CRYO-ELECTRON MICROSCOPY                         |
+| OTHER                                            |
+| SOLUTION NMR, SOLUTION SCATTERING                |
+| FIBER DIFFRACTION, SOLID-STATE NMR               |
+| ELECTRON MICROSCOPY, SOLUTION SCATTERING         |
+| SOLID-STATE NMR, ELECTRON MICROSCOPY             |
+| X-RAY DIFFRACTION, NEUTRON DIFFRACTION           |
+| NEUTRON DIFFRACTION, X-RAY DIFFRACTION           |
+| ELECTRON MICROSCOPY,SOLID-STATE NMR              |
+| EM-single_part,EM                                |
+| FD                                               |
+| XRAY,EM,NMR,ND,EC,SSNMR,FD                       |
+| EM-tomography,EM                                 |
+| EM-subtomogram,EM                                |
+| EC                                               |
+| XRAY,EM-helical,EM                               |
+| XRAY,NMR                                         |
+| XRAY,EM-single_part,EM                           |
++--------------------------------------------------+

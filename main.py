@@ -45,8 +45,6 @@ file_handler = logging.FileHandler("onedep_test.log")
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
-logger.removeHandler(logging.StreamHandler(sys.stdout))
-logger.removeHandler(logging.StreamHandler(sys.stderr))
 
 config = ConfigInfo()
 configApp = ConfigInfoAppBase()
@@ -75,52 +73,58 @@ class RemoteArchive:
 class EntryStatus:
     status: str = "pending"
     arch_depid: str = None
-    arch_entry_id: str = None
-    exp_type: str = None
-    test_depid: str = None
+    arch_entry_id: str = "?"
+    exp_type: ExperimentTypes = None
+    exp_subtype: ExperimentEMSubtypes = None
+    test_depid: str = "?"
     message: str = "Starting tests..."
 
     def __repr__(self):
         return f"EntryStatus(status={self.status}, arch_depid={self.arch_depid}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_depid={self.test_depid}, message={self.message})"
 
+    def __str__(self):
+        exp_type = self.exp_type.value if self.exp_type else "?"
+        return f"{self.arch_depid} ({self.arch_entry_id}) → {self.test_depid} {exp_type}: {self.message}"
 
 class StatusManager:
     """
     Manages the statuses for all entries in the depid_list.
     """
-    def __init__(self, depid_list):
-        self.statuses = {depid: EntryStatus() for depid in depid_list}
+    def __init__(self, dep_id_list):
+        self.statuses = {dep_id: EntryStatus(arch_depid=dep_id) for dep_id in dep_id_list}
 
-    def update_status(self, depid, **kwargs):
+    def update_status(self, dep_id, **kwargs):
         """
         Update the status of a specific entry.
         
         Args:
-            depid (str): The ID of the entry to update.
+            dep_id (str): The ID of the entry to update.
             kwargs: Fields to update in the EntryStatus object.
         """
-        if depid not in self.statuses:
-            raise KeyError(f"DepID {depid} not found in statuses.")
+        if dep_id not in self.statuses:
+            raise KeyError(f"DepID {dep_id} not found in statuses.")
+
+        logger.info(str(self.statuses[dep_id]))
 
         for key, value in kwargs.items():
-            if hasattr(self.statuses[depid], key):
-                setattr(self.statuses[depid], key, value)
+            if hasattr(self.statuses[dep_id], key):
+                setattr(self.statuses[dep_id], key, value)
             else:
                 raise AttributeError(f"Invalid field '{key}' for EntryStatus.")
 
-    def get_status(self, depid):
+    def get_status(self, dep_id):
         """
         Retrieve the status of a specific entry.
         
         Args:
-            depid (str): The ID of the entry to retrieve.
+            dep_id (str): The ID of the entry to retrieve.
         
         Returns:
             EntryStatus: The status object for the given depid.
         """
-        if depid not in self.statuses:
-            raise KeyError(f"DepID {depid} not found in statuses.")
-        return self.statuses[depid]
+        if dep_id not in self.statuses:
+            raise KeyError(f"DepID {dep_id} not found in statuses.")
+        return self.statuses[dep_id]
 
     def __iter__(self):
         """
@@ -334,11 +338,9 @@ def create_deposition(etype: ExperimentTypes, email: str, subtype: ExperimentEMS
     elif etype == ExperimentTypes.EC:
         deposition = api.create_ec_deposition(email, users, country, coordinates, password, related_emdb, no_map)
     elif etype == ExperimentTypes.NMR:
-        # deposition = api.create_nmr_deposition(email, users, country, coordinates, password, related_bmrb)
-        pass
+        deposition = api.create_nmr_deposition(email, users, country, coordinates, password)
     elif etype == ExperimentTypes.SSNMR:
-        # deposition = api.create_ssnmr_deposition(email, users, country, coordinates, password, related_bmrb)
-        pass
+        deposition = api.create_ssnmr_deposition(email, users, country, coordinates, password)
     else:
         raise ValueError(f"Unknown experiment type: {etype}")
 
@@ -414,25 +416,26 @@ def compare_files(dep_id: str, base_dep_id: str, base_files_location: str):
                 cifdiff(base_path, target_path)
 
 
-def create_and_process(fetcher, dep_id):
-    if dep_id is None:
-        dep = create_deposition(etype=ExperimentTypes(experiment_type), email="wbueno@ebi.ac.uk")
-        dep_id = dep.dep_id
-    print("[+] dep_id", dep_id)
+def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusManager):
+    exp_type = status_manager.get_status(dep_id).exp_type # feels hackish
+    exp_subtype = status_manager.get_status(dep_id).exp_subtype # feels hackish
 
+    status_manager.update_status(dep_id, status="working", message="Creating deposition")
+    
+    try:
+        test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+    except:
+        status_manager.update_status(dep_id, status="failed", message="Error creating deposition")
+        return
+
+    status_manager.update_status(dep_id, test_dep=test_dep.dep_id, message="Test deposition created. Fetching files from archive...")
     tmp_dir = tempfile.mkdtemp()
     base_dir = os.path.join(tmp_dir, BASE_FILES_DIR)
 
     try:
         os.makedirs(base_dir, exist_ok=True)
-
-        if not reupload:
-            dep_cache.copy_files(dep_id, base_dir)
-            upload_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
-        else:
-            dep_cache.remove(dep_id)
-            dep_cache.copy_files(dep_id, base_dir, repository="archive")
-            reupload_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
+        fetcher.fetch(dep_id, base_dir)
+        upload_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
         response = api.process(dep_id, voxel=None, copy_from_id=None, **copy_elements)
@@ -455,8 +458,11 @@ def create_and_process(fetcher, dep_id):
             shutil.rmtree(tmp_dir)
 
 
-def get_entry_info(dep_id):
+def get_entry_info(dep_id, status_manager):
+    """Part of the main testing pipeline, hence the status_manager here. Only Jesus can judge me
+    """
     connection = MySQLdb.connect(**prod_db)
+    status_manager.update_status(dep_id, status="working", message="Getting entry info")
 
     try:
         with connection.cursor() as cursor:
@@ -473,19 +479,38 @@ def get_entry_info(dep_id):
                     eid = result[0][i].lower()
                     break
 
-            time.sleep(random.randint(1, 3))
+            exp = result[0][3].lower()
+            exp_method = None
+            exp_submethod = None
+            if 'xray' in exp or 'x-ray' in exp:
+                exp_method = ExperimentTypes.XRAY
+            elif 'crystallography' in exp:
+                exp_method = ExperimentTypes.EC
+            elif 'microscopy' in exp or 'em' in exp:
+                exp_method = ExperimentTypes.EM
+                if 'single_part' in exp:
+                    exp_submethod = ExperimentEMSubtypes.SINGLE
+                elif 'tomography' in exp:
+                    exp_submethod = ExperimentEMSubtypes.TOMOGRAPHY
+                elif 'subtomogram' in exp:
+                    exp_submethod = ExperimentEMSubtypes.SUBTOMOGRAM
+                elif 'helical' in exp:
+                    exp_submethod = ExperimentEMSubtypes.HELICAL
+            elif 'solution' in exp:
+                exp_method = ExperimentTypes.SSNMR
+            elif 'solid' in exp:
+                exp_method = ExperimentTypes.NMR
+            elif 'fiber' in exp:
+                exp_method = ExperimentTypes.FIBER
+            elif 'neutron' in exp:
+                exp_method = ExperimentTypes.NEUTRON
 
-            exp_method = result[0][3]
-            if 'xray' in exp_method.lower() or 'x-ray' in exp_method.lower():
-                exp_method = "xray"
-            elif 'em' in exp_method.lower():
-                exp_method = "em"
-            elif 'nmr' in exp_method.lower():
-                exp_method = "nmr"
-            else:
-                exp_method = exp_method.lower()
-
-            return {"entry_id": eid, "exp_method": exp_method}
+            status_manager.update_status(
+                dep_id,
+                arch_entry_id=eid,
+                exp_type=exp_method,
+                exp_subtype=exp_submethod,
+            )
     finally:
         connection.close()
 
@@ -496,26 +521,28 @@ def generate_table(status_manager):
     spinner = Spinner("dots", text="", style="blue")
 
     for entry_status in sorted(status_manager, key=lambda x: x.arch_depid or ""):
-        dep_id = entry_status.arch_depid or "(unknown)"
-        info = f"({entry_status.arch_entry_id or '?'}) ({entry_status.exp_type or '?'})"
+        arch_dep_id = entry_status.arch_depid
+        arch_entry_id = entry_status.arch_entry_id
+        exp_type = entry_status.exp_type.value if entry_status.exp_type else "?"
+        test_dep_id = entry_status.test_depid
         message = entry_status.message
 
         if entry_status.status in ("working", "pending"):
-            table.add_row(spinner, f"{dep_id} [bright_cyan]{info}[/bright_cyan] {message}")
+            table.add_row(spinner, f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
         elif entry_status.status == "finished":
-            table.add_row("[green]✓[/green]", f"{dep_id} [bright_cyan]{info}[/bright_cyan] {message}")
+            table.add_row("[green]✓[/green]", f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
         elif entry_status.status == "failed":
-            table.add_row("[red]✗[/red]", f"{dep_id} {info} {message}")
+            table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
 
     return table
 
 
 @click.command()
-@click.argument('depid_list', nargs=-1)
+@click.argument('dep_id_list', nargs=-1)
 @click.option('--reupload', is_flag=True, help='Test reupload after submission')
 @click.option('--keep-temp', is_flag=True, help='Keep temporary files')
 @click.option('--cache-location', default=os.path.join(config.get("SITE_ARCHIVE_STORAGE_PATH"), "tempdep"), help='Cache location')
-def main(depid_list, reupload, keep_temp, cache_location):
+def main(dep_id_list, reupload, keep_temp, cache_location):
     if "pro" in getSiteId().lower():
         print("[!] this script should not be run in production. Exiting.")
         return
@@ -523,39 +550,22 @@ def main(depid_list, reupload, keep_temp, cache_location):
     # (status, exp type, message)
     remote = RemoteArchive(host="local.rcsb.rutgers.edu", user="onedep", root_path="/wwpdb/onedep")
     fetcher = RemoteFetcher(remote, cache_location=cache_location)
-    status_manager = StatusManager(depid_list)
+    status_manager = StatusManager(dep_id_list)
 
     with Live(generate_table(status_manager), refresh_per_second=15) as live:
         live.update(generate_table(status_manager))
 
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(get_entry_info, dep_id): dep_id for dep_id in depid_list}
+            futures_info = {executor.submit(get_entry_info, dep_id, status_manager): dep_id for dep_id in dep_id_list}
 
-            for future in concurrent.futures.as_completed(futures):
-                dep_id = futures[future]
-
-                # Update the status to "working" for the current dep_id
-                status_manager.update_status(dep_id, status="working", message="Getting entry info")
-                live.update(generate_table(status_manager))
+            for future in concurrent.futures.as_completed(futures_info):
+                dep_id = futures_info[future]
 
                 try:
-                    info = future.result()
-                    # Update the status to "finished" with additional info
-                    status_manager.update_status(
-                        dep_id,
-                        status="finished",
-                        arch_entry_id=info["entry_id"],
-                        exp_type=info["exp_method"],
-                        message="Info read from db"
-                    )
-                    # Process the entry
-                    # create_and_process(fetcher, dep_id)
+                    future.result()
                 except Exception as e:
-                    # Update the status to "failed" in case of an exception
                     status_manager.update_status(dep_id, status="failed", message=f"Error getting entry info ({e})")
-                    continue
                 finally:
-                    # Update the live table with the latest statuses
                     live.update(generate_table(status_manager))
 
 
