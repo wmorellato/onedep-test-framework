@@ -33,18 +33,22 @@ from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase,
 
 from wwpdb.apps.deposit.auth.tokens import create_token
 from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
-from dataclasses import dataclass
+from wwpdb.apps.deposit.depui.constants import uploadDict
+from wwpdb.apps.deposit.common.utils import parse_filename
 from dataclasses import dataclass
 from wwpdb.apps.deposit.main.schemas import (ExperimentEMSubtypes,
                                              ExperimentTypes)
 
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+file_logger = logging.getLogger(__name__)
+file_logger.setLevel(logging.INFO)
 file_handler = logging.FileHandler("onedep_test.log")
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
+file_logger.handlers.clear()
+file_logger.addHandler(file_handler)
+file_logger.propagate = False
+
 
 config = ConfigInfo()
 configApp = ConfigInfoAppBase()
@@ -72,26 +76,27 @@ class RemoteArchive:
 @dataclass
 class EntryStatus:
     status: str = "pending"
-    arch_depid: str = None
+    arch_dep_id: str = None
     arch_entry_id: str = "?"
     exp_type: ExperimentTypes = None
     exp_subtype: ExperimentEMSubtypes = None
-    test_depid: str = "?"
+    test_dep_id: str = "?"
     message: str = "Starting tests..."
 
     def __repr__(self):
-        return f"EntryStatus(status={self.status}, arch_depid={self.arch_depid}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_depid={self.test_depid}, message={self.message})"
+        return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.test_dep_id}, message={self.message})"
 
     def __str__(self):
         exp_type = self.exp_type.value if self.exp_type else "?"
-        return f"{self.arch_depid} ({self.arch_entry_id}) → {self.test_depid} {exp_type}: {self.message}"
+        return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.test_dep_id} {exp_type}: {self.message}"
+
 
 class StatusManager:
     """
     Manages the statuses for all entries in the depid_list.
     """
     def __init__(self, dep_id_list):
-        self.statuses = {dep_id: EntryStatus(arch_depid=dep_id) for dep_id in dep_id_list}
+        self.statuses = {dep_id: EntryStatus(arch_dep_id=dep_id) for dep_id in dep_id_list}
 
     def update_status(self, dep_id, **kwargs):
         """
@@ -104,7 +109,7 @@ class StatusManager:
         if dep_id not in self.statuses:
             raise KeyError(f"DepID {dep_id} not found in statuses.")
 
-        logger.info(str(self.statuses[dep_id]))
+        file_logger.info(str(self.statuses[dep_id]))
 
         for key, value in kwargs.items():
             if hasattr(self.statuses[dep_id], key):
@@ -260,7 +265,7 @@ class RemoteFetcher:
         dep_location = os.path.join(self.cache_location, dep_id)
 
         if self._is_cached(dep_id):
-            logger.info("Entry %s found in cache. Copying to %s", dep_id, destination)
+            file_logger.info("Entry %s found in cache. Copying to %s", dep_id, destination)
             self._copy_from_cache(dep_id, destination)
             return
 
@@ -268,7 +273,7 @@ class RemoteFetcher:
 
         os.makedirs(dep_location, exist_ok=True)
 
-        logger.info("Entry %s not found in cache. Downloading from remote host %s", dep_id, self.remote_archive.host)
+        file_logger.info("Entry %s not found in cache. Downloading from remote host %s", dep_id, self.remote_archive.host)
         self._fetch_from_remote(dep_id, repository, dep_location)
         self._copy_from_cache(dep_id, destination)
 
@@ -278,17 +283,18 @@ class RemoteFetcher:
 
     def _copy_from_cache(self, dep_id, destination):
         if not self._is_cached(dep_id):
-            logger.warning("Unable to copy entry from cache (not found)")
+            file_logger.warning("Unable to copy entry from cache (not found)")
             return
 
         try:
             shutil.copytree(os.path.join(self.cache_location, dep_id), destination, dirs_exist_ok=True)
         except Exception as e:
-            logger.error("Error copying files from cache: %s", e)
+            file_logger.error("Error copying files from cache: %s", e)
+            raise
 
     def _remove_from_cache(self, dep_id):
         if not self._is_cached(dep_id):
-            logger.warning("Unable to remove entry from cache (not found)")
+            file_logger.warning("Unable to remove entry from cache (not found)")
             return
         shutil.rmtree(os.path.join(self.cache_location, dep_id))
 
@@ -301,9 +307,14 @@ class RemoteFetcher:
     def _fetch_from_remote(self, dep_id, repository, local_path):
         # ideally this should be taken from site-config
         # a local copy of the remote site-config would be necessary, so leaving this as is now
-        remote_path = os.path.join(self.remote_archive.root_path, "data", "production", repository, dep_id)
+        remote_path = os.path.join(self.remote_archive.root_path, "data", "dev", repository, dep_id)
+
+        if self.remote_archive.host == "localhost":
+            shutil.copytree(remote_path, local_path, dirs_exist_ok=True)
+            return
+
         rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_path}/", local_path]
-        logger.debug("Running command %s", ' '.join(rsync_command))
+        file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -347,19 +358,31 @@ def create_deposition(etype: ExperimentTypes, email: str, subtype: ExperimentEMS
     return deposition
 
 
-def upload_files(dep_id: str, base_dep_id: str, base_files_location: str):
+def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, status_manager: StatusManager):
     lfs = LocalFileSystem()
+    # getting all files with the 'upload' milestone from the archive dir
+    uploaded_files = [f for f in os.listdir(base_files_location) if "upload_P" in f]
 
-    for f in input_files:
-        wdo = lfs.locate(dep_id=base_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[1], format=f[2], version="latest", milestone="upload")
-        basename = os.path.basename(wdo.getFilePathReference())
-        test_file = os.path.join(base_files_location, basename)
-        filetype = f[0]
+    for f in uploaded_files:
+        fobj = parse_filename(repository=ArchiveRepository.ARCHIVE.value, filename=f)
+        content_type = fobj.getContentType()
+        file_format = fobj.getFileFormat()
+        status_manager.update_status(test_dep_id, message=f"Uploading {content_type} {file_format}")
 
         try:
-            file = api.upload_file(dep_id, test_file, filetype, overwrite=False)
+            # trying to find the filetype from uploadDict
+            exp = status_manager.get_status(test_dep_id).exp_type
+            for _, value in uploadDict[exp.to_cif()].items():
+                for k2, v2 in value.items():
+                    if v2[1] == content_type and v2[2] == file_format:
+                        filetype = k2
+                        break
+
+            # file = api.upload_file(test_dep_id, fobj.getFilePathReference(), filetype, overwrite=False)
+            time.sleep(random.randint(1, 5))
         except:
-            print("[!] failed to upload %s" % test_file)
+            status_manager.update_status(test_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
+            raise
 
 
 def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
@@ -420,42 +443,51 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
     exp_type = status_manager.get_status(dep_id).exp_type # feels hackish
     exp_subtype = status_manager.get_status(dep_id).exp_subtype # feels hackish
 
-    status_manager.update_status(dep_id, status="working", message="Creating deposition")
-    
+    status_manager.update_status(dep_id, status="working", message="Creating test deposition")    
     try:
-        test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+        # test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+        time.sleep(random.randint(1, 5))
     except:
-        status_manager.update_status(dep_id, status="failed", message="Error creating deposition")
+        status_manager.update_status(dep_id, status="failed", message="Error creating test deposition")
         return
 
-    status_manager.update_status(dep_id, test_dep=test_dep.dep_id, message="Test deposition created. Fetching files from archive...")
-    tmp_dir = tempfile.mkdtemp()
-    base_dir = os.path.join(tmp_dir, BASE_FILES_DIR)
+    status_manager.update_status(dep_id, test_dep_id=dep_id, message="Fetching files from archive")
+    # status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
+    try:
+        tmp_dir = tempfile.mkdtemp()
+        base_dir = os.path.join(tmp_dir, BASE_FILES_DIR)
+        os.makedirs(base_dir, exist_ok=True)
+
+        fetcher.fetch(dep_id, base_dir)
+    except Exception as e:
+        file_logger.error("Error fetching files from archive: %s", e)
+        status_manager.update_status(dep_id, status="failed", message="Error fetching files from archive")
 
     try:
-        os.makedirs(base_dir, exist_ok=True)
-        fetcher.fetch(dep_id, base_dir)
-        upload_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
+        upload_files(test_dep_id=dep_id, arch_dep_id=dep_id, base_files_location=base_dir, status_manager=status_manager)
 
-        copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        response = api.process(dep_id, voxel=None, copy_from_id=None, **copy_elements)
-        print("[+] processing", response)
+        # copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
+        # response = api.process(dep_id, voxel=None, copy_from_id=None, **copy_elements)
+        # print("[+] processing", response)
 
-        status = ""
-        while status not in ("finished", "exception", "failed"):
-            time.sleep(5)
-            response = api.get_status(dep_id)
-            status = response.status
+        # status = ""
+        # while status not in ("finished", "exception", "failed"):
+        #     time.sleep(5)
+        #     response = api.get_status(dep_id)
+        #     status = response.status
 
-        compare_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
-
+        # compare_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
+    except:
+        status_manager.update_status(dep_id, status="failed", message="Error processing test deposition")
+        file_logger.error(traceback.format_exc())
     finally:
-        if reupload:
-            dep_cache.remove(dep_id)
+        pass
+        # if reupload:
+        #     dep_cache.remove(dep_id)
 
-        print("[+] tmp_dir", tmp_dir)
-        if not keep_temp:
-            shutil.rmtree(tmp_dir)
+        # print("[+] tmp_dir", tmp_dir)
+        # if not keep_temp:
+        #     shutil.rmtree(tmp_dir)
 
 
 def get_entry_info(dep_id, status_manager):
@@ -520,11 +552,11 @@ def generate_table(status_manager):
     table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
     spinner = Spinner("dots", text="", style="blue")
 
-    for entry_status in sorted(status_manager, key=lambda x: x.arch_depid or ""):
-        arch_dep_id = entry_status.arch_depid
+    for entry_status in sorted(status_manager, key=lambda x: x.arch_dep_id or ""):
+        arch_dep_id = entry_status.arch_dep_id
         arch_entry_id = entry_status.arch_entry_id
         exp_type = entry_status.exp_type.value if entry_status.exp_type else "?"
-        test_dep_id = entry_status.test_depid
+        test_dep_id = entry_status.test_dep_id
         message = entry_status.message
 
         if entry_status.status in ("working", "pending"):
@@ -541,14 +573,14 @@ def generate_table(status_manager):
 @click.argument('dep_id_list', nargs=-1)
 @click.option('--reupload', is_flag=True, help='Test reupload after submission')
 @click.option('--keep-temp', is_flag=True, help='Keep temporary files')
-@click.option('--cache-location', default=os.path.join(config.get("SITE_ARCHIVE_STORAGE_PATH"), "tempdep"), help='Cache location')
+@click.option('--cache-location', default="/wwpdb/onedep/testcache", help='Cache location')
 def main(dep_id_list, reupload, keep_temp, cache_location):
     if "pro" in getSiteId().lower():
         print("[!] this script should not be run in production. Exiting.")
         return
 
     # (status, exp type, message)
-    remote = RemoteArchive(host="local.rcsb.rutgers.edu", user="onedep", root_path="/wwpdb/onedep")
+    remote = RemoteArchive(host="localhost", user="onedep", root_path="/wwpdb/onedep")
     fetcher = RemoteFetcher(remote, cache_location=cache_location)
     status_manager = StatusManager(dep_id_list)
 
@@ -565,6 +597,18 @@ def main(dep_id_list, reupload, keep_temp, cache_location):
                     future.result()
                 except Exception as e:
                     status_manager.update_status(dep_id, status="failed", message=f"Error getting entry info ({e})")
+                finally:
+                    live.update(generate_table(status_manager))
+            
+            futures_process = {executor.submit(create_and_process, dep_id, fetcher, status_manager): dep_id for dep_id in dep_id_list}
+
+            for future in concurrent.futures.as_completed(futures_process):
+                dep_id = futures_process[future]
+
+                try:
+                    future.result()
+                except Exception as e:
+                    status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
                 finally:
                     live.update(generate_table(status_manager))
 
