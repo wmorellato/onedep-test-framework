@@ -1,8 +1,9 @@
-import logging
 import os
-import sys
+import logging
 import shutil
 import time
+import threading
+import queue
 
 import django
 
@@ -93,52 +94,38 @@ class EntryStatus:
 
 class StatusManager:
     """
-    Manages the statuses for all entries in the depid_list.
+    Minimal thread-safety with your exact logic preserved.
     """
-    def __init__(self, dep_id_list):
+    def __init__(self, dep_id_list, callback):
         self.statuses = {dep_id: EntryStatus(arch_dep_id=dep_id) for dep_id in dep_id_list}
+        self.callback = callback
+        self._lock = threading.RLock()
 
     def update_status(self, dep_id, **kwargs):
-        """
-        Update the status of a specific entry.
-        
-        Args:
-            dep_id (str): The ID of the entry to update.
-            kwargs: Fields to update in the EntryStatus object.
-        """
-        if dep_id not in self.statuses:
-            raise KeyError(f"DepID {dep_id} not found in statuses.")
+        with self._lock:
+            if dep_id not in self.statuses:
+                raise KeyError(f"DepID {dep_id} not found in statuses.")
 
-        file_logger.info(str(self.statuses[dep_id]))
+            file_logger.info(str(self.statuses[dep_id]))
 
-        for key, value in kwargs.items():
-            if hasattr(self.statuses[dep_id], key):
-                setattr(self.statuses[dep_id], key, value)
-            else:
-                raise AttributeError(f"Invalid field '{key}' for EntryStatus.")
+            for key, value in kwargs.items():
+                if hasattr(self.statuses[dep_id], key):
+                    setattr(self.statuses[dep_id], key, value)
+                else:
+                    raise AttributeError(f"Invalid field '{key}' for EntryStatus.")
+
+            if self.callback:
+                self.callback()
 
     def get_status(self, dep_id):
-        """
-        Retrieve the status of a specific entry.
-        
-        Args:
-            dep_id (str): The ID of the entry to retrieve.
-        
-        Returns:
-            EntryStatus: The status object for the given depid.
-        """
-        if dep_id not in self.statuses:
-            raise KeyError(f"DepID {dep_id} not found in statuses.")
-        return self.statuses[dep_id]
+        with self._lock:
+            if dep_id not in self.statuses:
+                raise KeyError(f"DepID {dep_id} not found in statuses.")
+            return self.statuses[dep_id]
 
     def __iter__(self):
-        """
-        Iterate over all EntryStatus objects.
-        
-        Yields:
-            EntryStatus: Each status object in the manager.
-        """
-        return iter(self.statuses.values())
+        with self._lock:
+            return iter(list(self.statuses.values()))
 
 
 prod_host = {
@@ -579,38 +566,36 @@ def main(dep_id_list, reupload, keep_temp, cache_location):
         print("[!] this script should not be run in production. Exiting.")
         return
 
-    # (status, exp type, message)
     remote = RemoteArchive(host="localhost", user="onedep", root_path="/wwpdb/onedep")
     fetcher = RemoteFetcher(remote, cache_location=cache_location)
-    status_manager = StatusManager(dep_id_list)
 
-    with Live(generate_table(status_manager), refresh_per_second=15) as live:
+    with Live(refresh_per_second=15) as live:
+        def update_callback():
+            """Callback to update the live display"""
+            live.update(generate_table(status_manager))
+
+        # Use the simpler thread-safe version
+        status_manager = StatusManager(dep_id_list, callback=update_callback)
         live.update(generate_table(status_manager))
-
+        
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures_info = {executor.submit(get_entry_info, dep_id, status_manager): dep_id for dep_id in dep_id_list}
 
             for future in concurrent.futures.as_completed(futures_info):
                 dep_id = futures_info[future]
-
                 try:
                     future.result()
                 except Exception as e:
                     status_manager.update_status(dep_id, status="failed", message=f"Error getting entry info ({e})")
-                finally:
-                    live.update(generate_table(status_manager))
-            
+
             futures_process = {executor.submit(create_and_process, dep_id, fetcher, status_manager): dep_id for dep_id in dep_id_list}
 
             for future in concurrent.futures.as_completed(futures_process):
                 dep_id = futures_process[future]
-
                 try:
                     future.result()
                 except Exception as e:
                     status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
-                finally:
-                    live.update(generate_table(status_manager))
 
 
 if __name__ == '__main__':
