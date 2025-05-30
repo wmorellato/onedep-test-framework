@@ -1,48 +1,45 @@
 import os
-import logging
-import shutil
-import time
-import threading
-import queue
-
 import django
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "wwpdb.apps.deposit.settings"
 django.setup()
 
+import pickle
 import concurrent.futures
 import hashlib
-import os
-import random
+import logging
 import shutil
 import subprocess
 import tempfile
-import traceback
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 import click
 import MySQLdb
-from onedep_deposition.deposit_api import DepositApi
-from onedep_deposition.enum import Country, FileType
+
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
+
+from onedep_deposition.deposit_api import DepositApi
+from onedep_deposition.enum import Country, FileType
+from onedep_deposition.models import (DepositError, DepositStatus, EMSubType,
+                                      ExperimentType)
+
+from wwpdb.apps.deposit.auth.tokens import create_token
+from wwpdb.apps.deposit.common.utils import parse_filename
+from wwpdb.apps.deposit.depui.constants import uploadDict
+from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
+from wwpdb.apps.deposit.main.schemas import ExperimentTypes
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase,
                                               ConfigInfoAppCommon)
 
-from wwpdb.apps.deposit.auth.tokens import create_token
-from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
-from wwpdb.apps.deposit.depui.constants import uploadDict
-from wwpdb.apps.deposit.common.utils import parse_filename
-from dataclasses import dataclass
-from wwpdb.apps.deposit.main.schemas import (ExperimentEMSubtypes,
-                                             ExperimentTypes)
-
-
 file_logger = logging.getLogger(__name__)
-file_logger.setLevel(logging.INFO)
+file_logger.setLevel(logging.DEBUG)
 file_handler = logging.FileHandler("onedep_test.log")
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_formatter)
@@ -67,6 +64,85 @@ PROD_CONFIG = ConfigInfo(siteId=PROD_SITE_ID)
 DEBUG = False
 
 
+class FileTypeMapping:
+    ANY_FORMAT = {
+        "parameter-file.any": FileType.CRYSTAL_PARAMETER,
+        "topology-file.any": FileType.CRYSTAL_TOPOLOGY,
+        "virus-matrix.any": FileType.VIRUS_MATRIX,
+        "nmr-restraints.any": FileType.NMR_TOPOLOGY_AMBER,
+        "nmr-restraints.any": FileType.NMR_RESTRAINT_CNS,
+        "topology-file.any": FileType.NMR_TOPOLOGY_GROMACS,
+        "nmr-restraints.any": FileType.NMR_RESTRAINT_OTHER,
+        "nmr-peaks.any": FileType.NMR_SPECTRAL_PEAK,
+    }
+
+    MAP = {
+        "layer-lines.txt": FileType.LAYER,
+        "fsc.xml": FileType.FSC_XML,
+        "model.pdb": FileType.PDB_COORD,
+        "model.pdbx": FileType.MMCIF_COORD,
+        "em-volume.map": FileType.EM_MAP,
+        "img-emdb.jpg": FileType.ENTRY_IMAGE,
+        "em-additional-volume.map": FileType.EM_ADDITIONAL_MAP,
+        "em-mask-volume.map": FileType.EM_MASK,
+        "em-half-volume.map": FileType.EM_HALF_MAP,
+        "structure-factors.pdbx": FileType.CRYSTAL_STRUC_FACTORS,
+        "structure-factors.mtz": FileType.CRYSTAL_MTZ,
+        "nmr-chemical-shifts.nmr-star": FileType.NMR_ACS,
+        "nmr-restraints.amber": FileType.NMR_RESTRAINT_AMBER,
+        "nmr-restraints.aria": FileType.NMR_RESTRAINT_BIOSYM,
+        "nmr-restraints.biosym": FileType.NMR_RESTRAINT_CHARMM,
+        "nmr-restraints.charmm": FileType.NMR_RESTRAINT_CYANA,
+        "nmr-restraints.cns": FileType.NMR_RESTRAINT_DYNAMO,
+        "nmr-restraints.cyana": FileType.NMR_RESTRAINT_PALES,
+        "nmr-restraints.dynamo": FileType.NMR_RESTRAINT_TALOS,
+        "nmr-restraints.gromacs": FileType.NMR_RESTRAINT_GROMACS,
+        "nmr-restraints.isd": FileType.NMR_RESTRAINT_ISD,
+        "nmr-restraints.rosetta": FileType.NMR_RESTRAINT_ROSETTA,
+        "nmr-restraints.sybyl": FileType.NMR_RESTRAINT_SYBYL,
+        "nmr-restraints.xplor-nih": FileType.NMR_RESTRAINT_XPLOR,
+        "nmr-data-nef.nmr-star": FileType.NMR_UNIFIED_NEF,
+        "nmr-data-str.nmr-star": FileType.NMR_UNIFIED_STAR,
+    }
+
+    @staticmethod
+    def get_file_type(content_type: str, format: str) -> FileType:
+        """Get the FileType enum based on the filename."""
+        if content_type in FileTypeMapping.ANY_FORMAT:
+            return FileTypeMapping.ANY_FORMAT[content_type]
+
+        if f"{content_type}.{format}" in FileTypeMapping.MAP:
+            return FileTypeMapping.MAP[f"{content_type}.{format}"]
+
+        raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
+
+
+def parse_voxel_values(dep_id):
+    """
+    Parse a pickle file and extract the first contour_level and pixel_spacing values.
+    
+    Args:
+        dep_id (str): The deposition ID to locate the pickle file.
+        
+    Returns:
+        tuple: (contour_level, pixel_spacing_x/y/z) or None if not found
+    """
+    with open(filepath, 'rb') as f:
+        data = pickle.load(f)
+
+    item = data['items'][0]
+    contour_level = item['contour_level']['value']
+
+    # Get first available pixel spacing
+    pixel_spacing = None
+    for axis in ['x', 'y', 'z']:
+        if f'pixel_spacing_{axis}' in item:
+            pixel_spacing = item[f'pixel_spacing_{axis}']['value']
+            break
+    
+    return contour_level, pixel_spacing
+
+
 @dataclass
 class RemoteArchive:
     host: str
@@ -79,8 +155,8 @@ class EntryStatus:
     status: str = "pending"
     arch_dep_id: str = None
     arch_entry_id: str = "?"
-    exp_type: ExperimentTypes = None
-    exp_subtype: ExperimentEMSubtypes = None
+    exp_type: ExperimentType = None
+    exp_subtype: EMSubType = None
     test_dep_id: str = "?"
     message: str = "Starting tests..."
 
@@ -225,22 +301,6 @@ UPLOAD_FILES_DIR = "upload"
 
 api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
 
-def copy_base_files(entry_id: str, destination: str):
-    if not entry_id.startswith("D_"):
-        entry_id = entry_id_to_dep_id(entry_id)
-
-    if entry_id is None:
-        return
-
-    def rsync_copy(source_host, source_path, destination_path):
-        rsync_command = f"rsync -arvz {source_host}:{source_path}/ {destination_path}"
-        subprocess.run(rsync_command, shell=True)
-
-    source_host = f"{prod_host['user']}@{prod_host['host']}"
-    source_path = os.path.join(prod_host["onedep_root"], "data", "production", "deposit", entry_id)
-
-    rsync_copy(source_host, source_path, destination)
-
 
 class RemoteFetcher:
     def __init__(self, remote_archive: RemoteArchive, cache_location, cache_size=10):
@@ -248,20 +308,28 @@ class RemoteFetcher:
         self.cache_location = cache_location
         self.cache_size = cache_size
 
-    def fetch(self, dep_id, destination, repository="deposit"):
-        dep_location = os.path.join(self.cache_location, dep_id)
+    def fetch(self, dep_id, destination, repository="deposit", pickles=True):
+        """ Fetches a deposition from the remote archive and stores it in the local cache.
+        If the deposition is already cached, it copies it to the destination.
+        If the cache is full, it evicts the oldest entry.
+
+        Args:
+            dep_id (str): The deposition ID to fetch.
+            destination (str): The local path where the deposition should be copied. No manipulation is done to this path before copy.
+            repository (str): The repository from which to fetch the deposition. Defaults to "deposit".
+        """
+        cached_dep = os.path.join(self.cache_location, dep_id)
 
         if self._is_cached(dep_id):
-            file_logger.info("Entry %s found in cache. Copying to %s", dep_id, destination)
             self._copy_from_cache(dep_id, destination)
             return
 
         self._evict_oldest_entry()
 
-        os.makedirs(dep_location, exist_ok=True)
+        os.makedirs(cached_dep, exist_ok=True)
 
         file_logger.info("Entry %s not found in cache. Downloading from remote host %s", dep_id, self.remote_archive.host)
-        self._fetch_from_remote(dep_id, repository, dep_location)
+        self._fetch_from_remote(dep_id, repository, cached_dep)
         self._copy_from_cache(dep_id, destination)
 
     def _is_cached(self, dep_id):
@@ -272,6 +340,8 @@ class RemoteFetcher:
         if not self._is_cached(dep_id):
             file_logger.warning("Unable to copy entry from cache (not found)")
             return
+
+        file_logger.info("Entry %s found in cache. Copying to %s", dep_id, destination)
 
         try:
             shutil.copytree(os.path.join(self.cache_location, dep_id), destination, dirs_exist_ok=True)
@@ -294,13 +364,14 @@ class RemoteFetcher:
     def _fetch_from_remote(self, dep_id, repository, local_path):
         # ideally this should be taken from site-config
         # a local copy of the remote site-config would be necessary, so leaving this as is now
-        remote_path = os.path.join(self.remote_archive.root_path, "data", "dev", repository, dep_id)
+        remote_data_path = os.path.join(self.remote_archive.root_path, "data", "dev", repository, dep_id)
 
         if self.remote_archive.host == "localhost":
-            shutil.copytree(remote_path, local_path, dirs_exist_ok=True)
+            file_logger.debug("Copying locally from %s to %s", remote_data_path, local_path)
+            shutil.copytree(remote_data_path, local_path, dirs_exist_ok=True)
             return
 
-        rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_path}/", local_path]
+        rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_data_path}/", local_path]
         file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -317,7 +388,7 @@ def cifdiff(file1, file2):
         print("[!] error running cifdiff", e.output)
 
 
-def create_deposition(etype: ExperimentTypes, email: str, subtype: ExperimentEMSubtypes = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
+def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
     """NOTE: if this code ever moves to a separate package, the deposition
     will have to be created using a proper HTTP request.
     """
@@ -325,19 +396,19 @@ def create_deposition(etype: ExperimentTypes, email: str, subtype: ExperimentEMS
     country = Country.UK
     password = "123456"
 
-    if etype == ExperimentTypes.EM:
+    if etype == ExperimentType.EM:
         deposition = api.create_em_deposition(email, users, country, subtype, coordinates, related_emdb, password)
-    elif etype == ExperimentTypes.XRAY:
+    elif etype == ExperimentType.XRAY:
         deposition = api.create_xray_deposition(email, users, country, password)
-    elif etype == ExperimentTypes.FIBER:
+    elif etype == ExperimentType.FIBER:
         deposition = api.create_fiber_deposition(email, users, country, password)
-    elif etype == ExperimentTypes.NEUTRON:
+    elif etype == ExperimentType.NEUTRON:
         deposition = api.create_neutron_deposition(email, users, country, password)
-    elif etype == ExperimentTypes.EC:
+    elif etype == ExperimentType.EC:
         deposition = api.create_ec_deposition(email, users, country, coordinates, password, related_emdb, no_map)
-    elif etype == ExperimentTypes.NMR:
+    elif etype == ExperimentType.NMR:
         deposition = api.create_nmr_deposition(email, users, country, coordinates, password)
-    elif etype == ExperimentTypes.SSNMR:
+    elif etype == ExperimentType.SSNMR:
         deposition = api.create_ssnmr_deposition(email, users, country, coordinates, password)
     else:
         raise ValueError(f"Unknown experiment type: {etype}")
@@ -346,7 +417,6 @@ def create_deposition(etype: ExperimentTypes, email: str, subtype: ExperimentEMS
 
 
 def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, status_manager: StatusManager):
-    lfs = LocalFileSystem()
     # getting all files with the 'upload' milestone from the archive dir
     uploaded_files = [f for f in os.listdir(base_files_location) if "upload_P" in f]
 
@@ -354,21 +424,20 @@ def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, s
         fobj = parse_filename(repository=ArchiveRepository.ARCHIVE.value, filename=f)
         content_type = fobj.getContentType()
         file_format = fobj.getFileFormat()
-        status_manager.update_status(test_dep_id, message=f"Uploading {content_type} {file_format}")
+
+        status_manager.update_status(arch_dep_id, message=f"Uploading `{content_type}.{file_format}`")
 
         try:
-            # trying to find the filetype from uploadDict
-            exp = status_manager.get_status(test_dep_id).exp_type
-            for _, value in uploadDict[exp.to_cif()].items():
-                for k2, v2 in value.items():
-                    if v2[1] == content_type and v2[2] == file_format:
-                        filetype = k2
-                        break
-
-            # file = api.upload_file(test_dep_id, fobj.getFilePathReference(), filetype, overwrite=False)
-            time.sleep(random.randint(1, 5))
+            filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
+            file_path = os.path.join(base_files_location, f)
+            file = api.upload_file(test_dep_id, file_path, filetype, overwrite=False)
+            file_logger.info("File %s, errors: %s, warnings: %s", f, [str(e) for e in file.errors], [str(e) for e in file.warnings])
+            # time.sleep(random.randint(1, 5))
+        except ValueError as e:
+            status_manager.update_status(arch_dep_id, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
+            raise
         except:
-            status_manager.update_status(test_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
+            status_manager.update_status(arch_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
             raise
 
 
@@ -426,55 +495,55 @@ def compare_files(dep_id: str, base_dep_id: str, base_files_location: str):
                 cifdiff(base_path, target_path)
 
 
-def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusManager):
+def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusManager, keep_temp=False):
     exp_type = status_manager.get_status(dep_id).exp_type # feels hackish
     exp_subtype = status_manager.get_status(dep_id).exp_subtype # feels hackish
 
     status_manager.update_status(dep_id, status="working", message="Creating test deposition")    
     try:
-        # test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
-        time.sleep(random.randint(1, 5))
-    except:
-        status_manager.update_status(dep_id, status="failed", message="Error creating test deposition")
-        return
-
-    status_manager.update_status(dep_id, test_dep_id=dep_id, message="Fetching files from archive")
-    # status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
-    try:
-        tmp_dir = tempfile.mkdtemp()
-        base_dir = os.path.join(tmp_dir, BASE_FILES_DIR)
-        os.makedirs(base_dir, exist_ok=True)
-
-        fetcher.fetch(dep_id, base_dir)
+        test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+        # time.sleep(random.randint(1, 5))
     except Exception as e:
-        file_logger.error("Error fetching files from archive: %s", e)
-        status_manager.update_status(dep_id, status="failed", message="Error fetching files from archive")
+        raise Exception("Error creating test deposition") from e
+
+    # status_manager.update_status(dep_id, test_dep_id=dep_id, message="Fetching files from archive")
+    status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="onedep_test_")
+        base_dep_dir = os.path.join(tmp_dir, BASE_FILES_DIR, test_dep.dep_id)
+        os.makedirs(base_dep_dir, exist_ok=True)
+
+        fetcher.fetch(dep_id, base_dep_dir)
+    except Exception as e:
+        raise Exception("Error fetching files from archive") from e
+
+    upload_files(test_dep_id=test_dep.dep_id, arch_dep_id=dep_id, base_files_location=base_dep_dir, status_manager=status_manager)
+
+    copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
+    response = api.process(test_dep.dep_id, voxel=None, copy_from_id=None, **copy_elements)
+    status = ""
 
     try:
-        upload_files(test_dep_id=dep_id, arch_dep_id=dep_id, base_files_location=base_dir, status_manager=status_manager)
+        while status not in ("finished", "exception", "failed"):
+            response = api.get_status(dep_id)
 
-        # copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        # response = api.process(dep_id, voxel=None, copy_from_id=None, **copy_elements)
-        # print("[+] processing", response)
+            if isinstance(response, DepositStatus):
+                if response.details == status_manager.get_status(dep_id).message:
+                    continue
 
-        # status = ""
-        # while status not in ("finished", "exception", "failed"):
-        #     time.sleep(5)
-        #     response = api.get_status(dep_id)
-        #     status = response.status
+                status_manager.update_status(dep_id, status="working", message=f"{response.details}")
+                status = response.status
+            elif isinstance(response, DepositError):
+                raise Exception(f"Error processing deposition: {response.message}")
+            else:
+                raise Exception(f"Unknown response type: {type(response)}")
 
-        # compare_files(dep_id=dep_id, base_dep_id=dep_id, base_files_location=base_dir)
+            time.sleep(5)
     except:
-        status_manager.update_status(dep_id, status="failed", message="Error processing test deposition")
-        file_logger.error(traceback.format_exc())
+        raise
     finally:
-        pass
-        # if reupload:
-        #     dep_cache.remove(dep_id)
-
-        # print("[+] tmp_dir", tmp_dir)
-        # if not keep_temp:
-        #     shutil.rmtree(tmp_dir)
+        if not keep_temp:
+            shutil.rmtree(tmp_dir)
 
 
 def get_entry_info(dep_id, status_manager):
@@ -502,27 +571,28 @@ def get_entry_info(dep_id, status_manager):
             exp_method = None
             exp_submethod = None
             if 'xray' in exp or 'x-ray' in exp:
-                exp_method = ExperimentTypes.XRAY
+                exp_method = ExperimentType.XRAY
             elif 'crystallography' in exp:
-                exp_method = ExperimentTypes.EC
+                exp_method = ExperimentType.EC
             elif 'microscopy' in exp or 'em' in exp:
-                exp_method = ExperimentTypes.EM
-                if 'single_part' in exp:
-                    exp_submethod = ExperimentEMSubtypes.SINGLE
-                elif 'tomography' in exp:
-                    exp_submethod = ExperimentEMSubtypes.TOMOGRAPHY
+                exp_method = ExperimentType.EM
+
+                if 'tomography' in exp:
+                    exp_submethod = EMSubType.TOMOGRAPHY
                 elif 'subtomogram' in exp:
-                    exp_submethod = ExperimentEMSubtypes.SUBTOMOGRAM
+                    exp_submethod = EMSubType.SUBTOMOGRAM
                 elif 'helical' in exp:
-                    exp_submethod = ExperimentEMSubtypes.HELICAL
+                    exp_submethod = EMSubType.HELICAL
+                else:
+                    exp_submethod = EMSubType.SPA
             elif 'solution' in exp:
-                exp_method = ExperimentTypes.SSNMR
+                exp_method = ExperimentType.SSNMR
             elif 'solid' in exp:
-                exp_method = ExperimentTypes.NMR
+                exp_method = ExperimentType.NMR
             elif 'fiber' in exp:
-                exp_method = ExperimentTypes.FIBER
+                exp_method = ExperimentType.FIBER
             elif 'neutron' in exp:
-                exp_method = ExperimentTypes.NEUTRON
+                exp_method = ExperimentType.NEUTRON
 
             status_manager.update_status(
                 dep_id,
@@ -547,11 +617,11 @@ def generate_table(status_manager):
         message = entry_status.message
 
         if entry_status.status in ("working", "pending"):
-            table.add_row(spinner, f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
+            table.add_row(spinner, f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
         elif entry_status.status == "finished":
-            table.add_row("[green]✓[/green]", f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
+            table.add_row("[green]✓[/green]", f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
         elif entry_status.status == "failed":
-            table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type}[/bright_cyan] {message}")
+            table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
 
     return table
 
@@ -588,13 +658,14 @@ def main(dep_id_list, reupload, keep_temp, cache_location):
                 except Exception as e:
                     status_manager.update_status(dep_id, status="failed", message=f"Error getting entry info ({e})")
 
-            futures_process = {executor.submit(create_and_process, dep_id, fetcher, status_manager): dep_id for dep_id in dep_id_list}
+            futures_process = {executor.submit(create_and_process, dep_id, fetcher, status_manager, False): dep_id for dep_id in dep_id_list}
 
             for future in concurrent.futures.as_completed(futures_process):
                 dep_id = futures_process[future]
                 try:
                     future.result()
                 except Exception as e:
+                    file_logger.error("Error processing entry %s: %s", dep_id, e)
                     status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
 
 
