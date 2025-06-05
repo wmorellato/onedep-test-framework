@@ -27,7 +27,7 @@ sf_file = "/wwpdb/onedep/deployments/dev/source/py-wwpdb_apps_deposit/2gc2-sf.ci
 
 # deposition = api.create_xray_deposition(email, users, country, password)
 # dep_id = deposition.dep_id
-dep_id = "D_8233000174"
+dep_id = "D_8233000178"
 
 # response = api.upload_file(dep_id, model_file, FileType.MMCIF_COORD, overwrite=False)
 # print(response)

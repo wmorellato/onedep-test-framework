@@ -542,11 +542,11 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
 
     copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
     response = api.process(test_dep.dep_id, **copy_elements)
-    status = "working"
+    status = "started"
 
     try:
-        while status == "working":
-            response = api.get_status(dep_id)
+        while status in ("running", "started", "submit"):
+            response = api.get_status(test_dep.dep_id)
 
             if isinstance(response, DepositStatus):
                 if response.details == status_manager.get_status(dep_id).message:
