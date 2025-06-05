@@ -117,7 +117,7 @@ class FileTypeMapping:
         raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
 
 
-def parse_voxel_values(dep_id):
+def parse_voxel_values(filepath):
     """
     Parse a pickle file and extract the first contour_level and pixel_spacing values.
     
@@ -127,18 +127,22 @@ def parse_voxel_values(dep_id):
     Returns:
         tuple: (contour_level, pixel_spacing_x/y/z) or None if not found
     """
-    with open(filepath, 'rb') as f:
-        data = pickle.load(f)
+    try:
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
 
-    item = data['items'][0]
-    contour_level = item['contour_level']['value']
+        item = data['items'][0]
+        contour_level = item['contour_level']['value']
 
-    # Get first available pixel spacing
-    pixel_spacing = None
-    for axis in ['x', 'y', 'z']:
-        if f'pixel_spacing_{axis}' in item:
-            pixel_spacing = item[f'pixel_spacing_{axis}']['value']
-            break
+        # Get first available pixel spacing
+        pixel_spacing = None
+        for axis in ['x', 'y', 'z']:
+            if f'pixel_spacing_{axis}' in item:
+                pixel_spacing = item[f'pixel_spacing_{axis}']['value']
+                break
+    except:
+        file_logger.error("Error reading voxel values from %s", filepath)
+        return None, None 
     
     return contour_level, pixel_spacing
 
@@ -290,12 +294,6 @@ test_file_catalogue = {
     }
 }
 
-input_files = [
-    [FileType.MMCIF_COORD, "model", "pdbx"],
-    [FileType.CRYSTAL_MTZ, "structure-factors", "mtz"],
-    # [FileType.CRYSTAL_STRUC_FACTORS, "structure-factors", "pdbx"],
-]
-
 BASE_FILES_DIR = "base"
 UPLOAD_FILES_DIR = "upload"
 
@@ -308,7 +306,7 @@ class RemoteFetcher:
         self.cache_location = cache_location
         self.cache_size = cache_size
 
-    def fetch(self, dep_id, destination, repository="deposit", pickles=True):
+    def fetch(self, dep_id, destination, repository="deposit"):
         """ Fetches a deposition from the remote archive and stores it in the local cache.
         If the deposition is already cached, it copies it to the destination.
         If the cache is full, it evicts the oldest entry.
@@ -331,6 +329,8 @@ class RemoteFetcher:
         file_logger.info("Entry %s not found in cache. Downloading from remote host %s", dep_id, self.remote_archive.host)
         self._fetch_from_remote(dep_id, repository, cached_dep)
         self._copy_from_cache(dep_id, destination)
+
+        # TODO: must return a LocalArchiveish object
 
     def _is_cached(self, dep_id):
         deposition_folder = os.path.join(self.cache_location, dep_id)
@@ -365,13 +365,24 @@ class RemoteFetcher:
         # ideally this should be taken from site-config
         # a local copy of the remote site-config would be necessary, so leaving this as is now
         remote_data_path = os.path.join(self.remote_archive.root_path, "data", "dev", repository, dep_id)
+        remote_pickles_path = os.path.join(self.remote_archive.root_path, "data", "dev", "deposit", "temp_files", "deposition-v-200", dep_id)
+        local_data_path = os.path.join(local_path, "data")
+        local_pickles_path = os.path.join(local_path, "pickles")
+
+        os.makedirs(local_data_path, exist_ok=True)
+        os.makedirs(local_pickles_path, exist_ok=True)
 
         if self.remote_archive.host == "localhost":
             file_logger.debug("Copying locally from %s to %s", remote_data_path, local_path)
-            shutil.copytree(remote_data_path, local_path, dirs_exist_ok=True)
+            shutil.copytree(remote_data_path, os.path.join(local_path, "data"), dirs_exist_ok=True)
+            shutil.copytree(remote_pickles_path, os.path.join(local_path, "pickles"), dirs_exist_ok=True)
             return
 
         rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_data_path}/", local_path]
+        file_logger.debug("Running command %s", ' '.join(rsync_command))
+        subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_pickles_path}/", local_pickles_path]
         file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -418,9 +429,11 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
 
 def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, status_manager: StatusManager):
     # getting all files with the 'upload' milestone from the archive dir
-    uploaded_files = [f for f in os.listdir(base_files_location) if "upload_P" in f]
+    previous_files = [f for f in os.listdir(os.path.join(base_files_location, "data")) if "upload_P" in f]
+    uploaded_files = []
+    contour_level, pixel_spacing = parse_voxel_values(os.path.join(base_files_location, "pickles", "em_map_upload.pkl"))
 
-    for f in uploaded_files:
+    for f in previous_files:
         fobj = parse_filename(repository=ArchiveRepository.ARCHIVE.value, filename=f)
         content_type = fobj.getContentType()
         file_format = fobj.getFileFormat()
@@ -429,16 +442,24 @@ def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, s
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
-            file_path = os.path.join(base_files_location, f)
+            file_path = os.path.join(base_files_location, "data", f)
             file = api.upload_file(test_dep_id, file_path, filetype, overwrite=False)
-            file_logger.info("File %s, errors: %s, warnings: %s", f, [str(e) for e in file.errors], [str(e) for e in file.warnings])
-            # time.sleep(random.randint(1, 5))
+            uploaded_files.append(file)
+
+            if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
+                if contour_level is not None:
+                    status_manager.update_status(arch_dep_id, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
+                    api.update_metadata(test_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
+                else:
+                    raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
         except ValueError as e:
             status_manager.update_status(arch_dep_id, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
             raise
         except:
             status_manager.update_status(arch_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
             raise
+    
+    return uploaded_files
 
 
 def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
@@ -520,11 +541,11 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
     upload_files(test_dep_id=test_dep.dep_id, arch_dep_id=dep_id, base_files_location=base_dep_dir, status_manager=status_manager)
 
     copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-    response = api.process(test_dep.dep_id, voxel=None, copy_from_id=None, **copy_elements)
-    status = ""
+    response = api.process(test_dep.dep_id, **copy_elements)
+    status = "working"
 
     try:
-        while status not in ("finished", "exception", "failed"):
+        while status == "working":
             response = api.get_status(dep_id)
 
             if isinstance(response, DepositStatus):
@@ -533,14 +554,15 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
 
                 status_manager.update_status(dep_id, status="working", message=f"{response.details}")
                 status = response.status
+
+                if status == "error":
+                    raise Exception(response.details)
             elif isinstance(response, DepositError):
-                raise Exception(f"Error processing deposition: {response.message}")
+                raise Exception(response.message)
             else:
-                raise Exception(f"Unknown response type: {type(response)}")
+                raise Exception(f"Unknown response type {type(response)}")
 
             time.sleep(5)
-    except:
-        raise
     finally:
         if not keep_temp:
             shutil.rmtree(tmp_dir)
