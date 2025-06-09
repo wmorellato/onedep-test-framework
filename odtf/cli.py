@@ -1,4 +1,5 @@
 import os
+import re
 import django
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "wwpdb.apps.deposit.settings"
@@ -17,12 +18,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import click
+import deepdiff
 import MySQLdb
 
 from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
+
+from odtf.archive import FileFinder, RemoteFetcher
+from odtf.common import get_file_logger
+from odtf.models import EntryStatus, FileTypeMapping, RemoteArchive
 
 from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
@@ -38,14 +44,7 @@ from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase,
                                               ConfigInfoAppCommon)
 
-file_logger = logging.getLogger(__name__)
-file_logger.setLevel(logging.DEBUG)
-file_handler = logging.FileHandler("onedep_test.log")
-file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(file_formatter)
-file_logger.handlers.clear()
-file_logger.addHandler(file_handler)
-file_logger.propagate = False
+file_logger = get_file_logger(__name__)
 
 
 config = ConfigInfo()
@@ -62,59 +61,6 @@ PROD_SITE_ID = "PDBE_DEV" # ENTER THIS
 PROD_HOST = "pdb-002.ebi.ac.uk" # ENTER THIS
 PROD_CONFIG = ConfigInfo(siteId=PROD_SITE_ID)
 DEBUG = False
-
-
-class FileTypeMapping:
-    ANY_FORMAT = {
-        "parameter-file.any": FileType.CRYSTAL_PARAMETER,
-        "topology-file.any": FileType.CRYSTAL_TOPOLOGY,
-        "virus-matrix.any": FileType.VIRUS_MATRIX,
-        "nmr-restraints.any": FileType.NMR_TOPOLOGY_AMBER,
-        "nmr-restraints.any": FileType.NMR_RESTRAINT_CNS,
-        "topology-file.any": FileType.NMR_TOPOLOGY_GROMACS,
-        "nmr-restraints.any": FileType.NMR_RESTRAINT_OTHER,
-        "nmr-peaks.any": FileType.NMR_SPECTRAL_PEAK,
-    }
-
-    MAP = {
-        "layer-lines.txt": FileType.LAYER,
-        "fsc.xml": FileType.FSC_XML,
-        "model.pdb": FileType.PDB_COORD,
-        "model.pdbx": FileType.MMCIF_COORD,
-        "em-volume.map": FileType.EM_MAP,
-        "img-emdb.jpg": FileType.ENTRY_IMAGE,
-        "em-additional-volume.map": FileType.EM_ADDITIONAL_MAP,
-        "em-mask-volume.map": FileType.EM_MASK,
-        "em-half-volume.map": FileType.EM_HALF_MAP,
-        "structure-factors.pdbx": FileType.CRYSTAL_STRUC_FACTORS,
-        "structure-factors.mtz": FileType.CRYSTAL_MTZ,
-        "nmr-chemical-shifts.nmr-star": FileType.NMR_ACS,
-        "nmr-restraints.amber": FileType.NMR_RESTRAINT_AMBER,
-        "nmr-restraints.aria": FileType.NMR_RESTRAINT_BIOSYM,
-        "nmr-restraints.biosym": FileType.NMR_RESTRAINT_CHARMM,
-        "nmr-restraints.charmm": FileType.NMR_RESTRAINT_CYANA,
-        "nmr-restraints.cns": FileType.NMR_RESTRAINT_DYNAMO,
-        "nmr-restraints.cyana": FileType.NMR_RESTRAINT_PALES,
-        "nmr-restraints.dynamo": FileType.NMR_RESTRAINT_TALOS,
-        "nmr-restraints.gromacs": FileType.NMR_RESTRAINT_GROMACS,
-        "nmr-restraints.isd": FileType.NMR_RESTRAINT_ISD,
-        "nmr-restraints.rosetta": FileType.NMR_RESTRAINT_ROSETTA,
-        "nmr-restraints.sybyl": FileType.NMR_RESTRAINT_SYBYL,
-        "nmr-restraints.xplor-nih": FileType.NMR_RESTRAINT_XPLOR,
-        "nmr-data-nef.nmr-star": FileType.NMR_UNIFIED_NEF,
-        "nmr-data-str.nmr-star": FileType.NMR_UNIFIED_STAR,
-    }
-
-    @staticmethod
-    def get_file_type(content_type: str, format: str) -> FileType:
-        """Get the FileType enum based on the filename."""
-        if content_type in FileTypeMapping.ANY_FORMAT:
-            return FileTypeMapping.ANY_FORMAT[content_type]
-
-        if f"{content_type}.{format}" in FileTypeMapping.MAP:
-            return FileTypeMapping.MAP[f"{content_type}.{format}"]
-
-        raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
 
 
 def parse_voxel_values(filepath):
@@ -145,31 +91,6 @@ def parse_voxel_values(filepath):
         return None, None 
     
     return contour_level, pixel_spacing
-
-
-@dataclass
-class RemoteArchive:
-    host: str
-    user: str
-    root_path: str
-
-
-@dataclass
-class EntryStatus:
-    status: str = "pending"
-    arch_dep_id: str = None
-    arch_entry_id: str = "?"
-    exp_type: ExperimentType = None
-    exp_subtype: EMSubType = None
-    test_dep_id: str = "?"
-    message: str = "Starting tests..."
-
-    def __repr__(self):
-        return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.test_dep_id}, message={self.message})"
-
-    def __str__(self):
-        exp_type = self.exp_type.value if self.exp_type else "?"
-        return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.test_dep_id} {exp_type}: {self.message}"
 
 
 class StatusManager:
@@ -227,69 +148,87 @@ prod_db = {
 
 test_file_catalogue = {
     # exp type
-    "xray": {
+    ExperimentType.XRAY: {
         # stage
         "upload": {
-            "model": [
-                # [milestone, version]
-                ["upload", "original"],
-                ["upload-convert", "latest"],
-                [None, "latest"],
-            ],
-            "model-issues-report": [
-                [None, "latest"],
-            ],
-            "structure-factors": [
-                ["upload", "original"],
-                ["upload-convert", "original"],
-                [None, "latest"],
-            ],
-            "structure-factor-report": [
-                [None, "latest"],
-            ],
-            "chem-comp-assign-details": [
-                [None, "latest"],
-            ],
-            "assembly-model": [
-                [None, "latest"],
-            ]
+            "model": {
+                "comparer": "cifdiff",
+                "files": [
+                    # [milestone, version]
+                    ["upload", "original"],
+                    ["upload-convert", "latest"],
+                    [None, "latest"],
+                ]
+            },
+            "model-issues-report": {
+                "comparer": "jsondiff",
+                "files": [
+                    [None, "latest"],
+                ]
+            },
+            "structure-factors": {
+                "comparer": "cifdiff",
+                "files": [
+                    ["upload", "original"],
+                    ["upload-convert", "original"],
+                    [None, "latest"],
+                ]
+            },
+            "structure-factor-report": {
+                "comparer": "jsondiff",
+                "files": [
+                    [None, "latest"],
+                ]
+            },
+            "chem-comp-assign-details": {
+                "comparer": "checksum",
+                "files": [
+                    [None, "latest"],
+                ]
+            },
+            "assembly-model": {
+                "comparer": "cifdiff",
+                "files": [
+                    [None, "latest"],
+                ]
+            }
         },
         "reupload": {
-            "merge-xyz-report": [
-                [None, "latest"],
-            ],
+            "merge-xyz-report": {
+                "comparer": "default",
+                "files": [
+                    [None, "latest"],
+                ]
+            },
         },
         "pre-submission": {
-            "chem-comp-depositor-info": [
-                [None, "latest"],
-            ]
+            "chem-comp-depositor-info": {
+                "comparer": "default",
+                "files": [
+                    [None, "latest"],
+                ]
+            }
         }
     },
-    "em": {
+    ExperimentType.EM: {
         "upload": {
-            "model": [
-                ["upload", "original"],
-                ["upload-convert", "latest"],
-                [None, "latest"],
-            ],
-            "em-volume": [
-                [None, "latest"],
-            ],
-            "em-mask-volume": [
-                [None, "latest"],
-            ],
-            "em-additional-volume": [
-                [None, "latest"],
-            ],
-            "em-half-volume": [
-                [None, "latest"],
-            ],
-            "mapfix-header-report": [
-                [None, "latest"],
-            ]
+            "model": {
+                "comparer": "cifdiff",
+                "files": [
+                    ["upload", "original"],
+                    ["upload-convert", "latest"],
+                    [None, "latest"],
+                ]
+            },
+            "mapfix-header-report": {
+                "comparer": "checksum",
+                "files": [
+                    [None, "latest"],
+                ]
+            }
         }
     },
-    "nmr": {
+    ExperimentType.NMR: {
 
     }
 }
@@ -300,103 +239,27 @@ UPLOAD_FILES_DIR = "upload"
 api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
 
 
-class RemoteFetcher:
-    def __init__(self, remote_archive: RemoteArchive, cache_location, cache_size=10):
-        self.remote_archive = remote_archive
-        self.cache_location = cache_location
-        self.cache_size = cache_size
-
-    def fetch(self, dep_id, destination, repository="deposit"):
-        """ Fetches a deposition from the remote archive and stores it in the local cache.
-        If the deposition is already cached, it copies it to the destination.
-        If the cache is full, it evicts the oldest entry.
-
-        Args:
-            dep_id (str): The deposition ID to fetch.
-            destination (str): The local path where the deposition should be copied. No manipulation is done to this path before copy.
-            repository (str): The repository from which to fetch the deposition. Defaults to "deposit".
-        """
-        cached_dep = os.path.join(self.cache_location, dep_id)
-
-        if self._is_cached(dep_id):
-            self._copy_from_cache(dep_id, destination)
-            return
-
-        self._evict_oldest_entry()
-
-        os.makedirs(cached_dep, exist_ok=True)
-
-        file_logger.info("Entry %s not found in cache. Downloading from remote host %s", dep_id, self.remote_archive.host)
-        self._fetch_from_remote(dep_id, repository, cached_dep)
-        self._copy_from_cache(dep_id, destination)
-
-        # TODO: must return a LocalArchiveish object
-
-    def _is_cached(self, dep_id):
-        deposition_folder = os.path.join(self.cache_location, dep_id)
-        return os.path.exists(deposition_folder)
-
-    def _copy_from_cache(self, dep_id, destination):
-        if not self._is_cached(dep_id):
-            file_logger.warning("Unable to copy entry from cache (not found)")
-            return
-
-        file_logger.info("Entry %s found in cache. Copying to %s", dep_id, destination)
-
-        try:
-            shutil.copytree(os.path.join(self.cache_location, dep_id), destination, dirs_exist_ok=True)
-        except Exception as e:
-            file_logger.error("Error copying files from cache: %s", e)
-            raise
-
-    def _remove_from_cache(self, dep_id):
-        if not self._is_cached(dep_id):
-            file_logger.warning("Unable to remove entry from cache (not found)")
-            return
-        shutil.rmtree(os.path.join(self.cache_location, dep_id))
-
-    def _evict_oldest_entry(self):
-        deposition_folders = [folder for folder in os.listdir(self.cache_location) if folder.startswith("D_")]
-        if len(deposition_folders) >= self.cache_size:
-            oldest_folder = min(deposition_folders, key=os.path.getctime)
-            shutil.rmtree(os.path.join(self.cache_location, oldest_folder))
-
-    def _fetch_from_remote(self, dep_id, repository, local_path):
-        # ideally this should be taken from site-config
-        # a local copy of the remote site-config would be necessary, so leaving this as is now
-        remote_data_path = os.path.join(self.remote_archive.root_path, "data", "dev", repository, dep_id)
-        remote_pickles_path = os.path.join(self.remote_archive.root_path, "data", "dev", "deposit", "temp_files", "deposition-v-200", dep_id)
-        local_data_path = os.path.join(local_path, "data")
-        local_pickles_path = os.path.join(local_path, "pickles")
-
-        os.makedirs(local_data_path, exist_ok=True)
-        os.makedirs(local_pickles_path, exist_ok=True)
-
-        if self.remote_archive.host == "localhost":
-            file_logger.debug("Copying locally from %s to %s", remote_data_path, local_path)
-            shutil.copytree(remote_data_path, os.path.join(local_path, "data"), dirs_exist_ok=True)
-            shutil.copytree(remote_pickles_path, os.path.join(local_path, "pickles"), dirs_exist_ok=True)
-            return
-
-        rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_data_path}/", local_path]
-        file_logger.debug("Running command %s", ' '.join(rsync_command))
-        subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        rsync_command = ["rsync", "-arvzL", f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_pickles_path}/", local_pickles_path]
-        file_logger.debug("Running command %s", ' '.join(rsync_command))
-        subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def cifdiff(file1, file2):
-    """Compare two mmCIF files and return a list of differences"""
-    bin_location = os.path.join(configApp.get_site_packages_path(), "cifdiff", "coord-file-pack", "bin", "CifDiff")
-    command = [bin_location, file1, file2]
+    command = ['gemmi', 'cifdiff', '-q', file1, file2]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    try:
-        output = subprocess.check_output(command, universal_newlines=True)
-        print(output)
-    except subprocess.CalledProcessError as e:
-        print("[!] error running cifdiff", e.output)
+    if result.returncode != 0:
+        raise RuntimeError(f"cifdiff failed with error: {result.stderr.strip()}")
+
+    output_lines = result.stdout.splitlines()
+    differences = []
+
+    pattern = re.compile(r'^\s*(_\S+)\.\s+rows:\s+(\d+)(\s+->\s+(\d+))?')
+    for line in output_lines:
+        match = pattern.match(line)
+        if match:
+            category = match.group(1)
+            old_rows = int(match.group(2))
+            new_rows = int(match.group(4)) if match.group(4) else old_rows
+            if old_rows != new_rows:
+                differences.append((category, old_rows, new_rows))
+
+    return differences
 
 
 def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
@@ -458,7 +321,7 @@ def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, s
         except:
             status_manager.update_status(arch_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
             raise
-    
+
     return uploaded_files
 
 
@@ -481,9 +344,9 @@ def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
             print("[!] failed to upload %s, %s" % (test_file, e))
 
 
-def compare_files(dep_id: str, base_dep_id: str, base_files_location: str):
+def compare_files(test_dep_id: str, arch_dep_id: str, base_dep_dir: str, status_manager, step="upload"):
+    exp_type = status_manager.get_status(arch_dep_id).exp_type
     lfs = LocalFileSystem()
-    console = Console()
 
     def calculate_md5(file_path):
         with open(file_path, "rb") as file:
@@ -492,12 +355,15 @@ def compare_files(dep_id: str, base_dep_id: str, base_files_location: str):
                 md5_hash.update(chunk)
         return md5_hash.hexdigest()
 
-    for f in files_to_compare:
-        target_wdo = lfs.locate(dep_id=dep_id, repository=ArchiveRepository.DEPOSIT, content=f[0], format=f[1], version=f[2], milestone=f[3])
+    # now this is hack to find the files easily: I move the base files to
+    # a subdir in tempdep and use LocalFileSystem to locate them
+
+    for f in test_file_catalogue[exp_type][step].values():
+        target_wdo = lfs.locate(dep_id=test_dep_id, repository=ArchiveRepository.DEPOSIT, content=f[0], format=f[1], version=f[2], milestone=f[3])
         target_path = target_wdo.getFilePathReference()
         # target_version = target_wdo.getFileVersionNumber()
 
-        base_wdo = lfs.locate(dep_id=base_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[0], format=f[1], version=f[2], milestone=f[3])
+        base_wdo = lfs.locate(dep_id=arch_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[0], format=f[1], version=f[2], milestone=f[3])
         base_path = base_wdo.getFilePathReference()
         if not lfs.exists(base_wdo):
             console.print(f"[yellow]base file not found: {base_path}[/yellow]")
@@ -527,7 +393,6 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
     except Exception as e:
         raise Exception("Error creating test deposition") from e
 
-    # status_manager.update_status(dep_id, test_dep_id=dep_id, message="Fetching files from archive")
     status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
     try:
         tmp_dir = tempfile.mkdtemp(prefix="onedep_test_")
@@ -689,6 +554,8 @@ def main(dep_id_list, reupload, keep_temp, cache_location):
                 except Exception as e:
                     file_logger.error("Error processing entry %s: %s", dep_id, e)
                     status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
+            
+            futures_compare = {executor.submit()}
 
 
 if __name__ == '__main__':

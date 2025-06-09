@@ -1,0 +1,89 @@
+from dataclasses import dataclass
+
+from onedep_deposition.enum import FileType
+from onedep_deposition.models import (EMSubType, ExperimentType)
+
+
+class FileTypeMapping:
+    ANY_FORMAT = {
+        "parameter-file.any": FileType.CRYSTAL_PARAMETER,
+        "topology-file.any": FileType.CRYSTAL_TOPOLOGY,
+        "virus-matrix.any": FileType.VIRUS_MATRIX,
+        "nmr-restraints.any": FileType.NMR_TOPOLOGY_AMBER,
+        "nmr-restraints.any": FileType.NMR_RESTRAINT_CNS,
+        "topology-file.any": FileType.NMR_TOPOLOGY_GROMACS,
+        "nmr-restraints.any": FileType.NMR_RESTRAINT_OTHER,
+        "nmr-peaks.any": FileType.NMR_SPECTRAL_PEAK,
+    }
+
+    MAP = {
+        "layer-lines.txt": FileType.LAYER,
+        "fsc.xml": FileType.FSC_XML,
+        "model.pdb": FileType.PDB_COORD,
+        "model.pdbx": FileType.MMCIF_COORD,
+        "em-volume.map": FileType.EM_MAP,
+        "img-emdb.jpg": FileType.ENTRY_IMAGE,
+        "em-additional-volume.map": FileType.EM_ADDITIONAL_MAP,
+        "em-mask-volume.map": FileType.EM_MASK,
+        "em-half-volume.map": FileType.EM_HALF_MAP,
+        "structure-factors.pdbx": FileType.CRYSTAL_STRUC_FACTORS,
+        "structure-factors.mtz": FileType.CRYSTAL_MTZ,
+        "nmr-chemical-shifts.nmr-star": FileType.NMR_ACS,
+        "nmr-restraints.amber": FileType.NMR_RESTRAINT_AMBER,
+        "nmr-restraints.aria": FileType.NMR_RESTRAINT_BIOSYM,
+        "nmr-restraints.biosym": FileType.NMR_RESTRAINT_CHARMM,
+        "nmr-restraints.charmm": FileType.NMR_RESTRAINT_CYANA,
+        "nmr-restraints.cns": FileType.NMR_RESTRAINT_DYNAMO,
+        "nmr-restraints.cyana": FileType.NMR_RESTRAINT_PALES,
+        "nmr-restraints.dynamo": FileType.NMR_RESTRAINT_TALOS,
+        "nmr-restraints.gromacs": FileType.NMR_RESTRAINT_GROMACS,
+        "nmr-restraints.isd": FileType.NMR_RESTRAINT_ISD,
+        "nmr-restraints.rosetta": FileType.NMR_RESTRAINT_ROSETTA,
+        "nmr-restraints.sybyl": FileType.NMR_RESTRAINT_SYBYL,
+        "nmr-restraints.xplor-nih": FileType.NMR_RESTRAINT_XPLOR,
+        "nmr-data-nef.nmr-star": FileType.NMR_UNIFIED_NEF,
+        "nmr-data-str.nmr-star": FileType.NMR_UNIFIED_STAR,
+    }
+
+    @staticmethod
+    def get_file_type(content_type: str, format: str) -> FileType:
+        """Get the FileType enum based on the filename."""
+        if content_type in FileTypeMapping.ANY_FORMAT:
+            return FileTypeMapping.ANY_FORMAT[content_type]
+
+        if f"{content_type}.{format}" in FileTypeMapping.MAP:
+            return FileTypeMapping.MAP[f"{content_type}.{format}"]
+
+        raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
+    
+
+@dataclass
+class RemoteArchive:
+    host: str
+    user: str
+    root_path: str
+
+
+@dataclass
+class CachedEntry:
+    dep_id: str
+    data_path: str
+    pickles_path: str
+
+
+@dataclass
+class EntryStatus:
+    status: str = "pending"
+    arch_dep_id: str = None
+    arch_entry_id: str = "?"
+    exp_type: ExperimentType = None
+    exp_subtype: EMSubType = None
+    test_dep_id: str = "?"
+    message: str = "Starting tests..."
+
+    def __repr__(self):
+        return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.test_dep_id}, message={self.message})"
+
+    def __str__(self):
+        exp_type = self.exp_type.value if self.exp_type else "?"
+        return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.test_dep_id} {exp_type}: {self.message}"

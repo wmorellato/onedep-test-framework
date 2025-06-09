@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "odtf"
+version = "0.1.0"
+description = "A project for managing test depositions and archive files"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/yourusername/onedep_test_project"
+repository = "https://github.com/yourusername/onedep_test_project"
+keywords = ["deposition", "archive", "files", "automation"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.28.1"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.2.0"
+black = "^23.1.0"
+mypy = "^1.5.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+odtf = "odtf.cli:main"
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "--strict-markers"
+testpaths = ["tests"]
