@@ -61,14 +61,13 @@ class FileTypeMapping:
 class RemoteArchive:
     host: str
     user: str
-    root_path: str
+    site_id: str
+    key_file: str = None
 
 
 @dataclass
-class CachedEntry:
-    dep_id: str
-    data_path: str
-    pickles_path: str
+class LocalArchive:
+    site_id: str
 
 
 @dataclass

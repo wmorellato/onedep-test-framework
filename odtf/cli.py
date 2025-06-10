@@ -26,9 +26,9 @@ from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
 
-from odtf.archive import FileFinder, RemoteFetcher
+from odtf.archive import RemoteFetcher
 from odtf.common import get_file_logger
-from odtf.models import EntryStatus, FileTypeMapping, RemoteArchive
+from odtf.models import EntryStatus, FileTypeMapping, RemoteArchive, LocalArchive
 
 from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
@@ -40,6 +40,7 @@ from wwpdb.apps.deposit.common.utils import parse_filename
 from wwpdb.apps.deposit.depui.constants import uploadDict
 from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
 from wwpdb.apps.deposit.main.schemas import ExperimentTypes
+from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase,
                                               ConfigInfoAppCommon)
@@ -48,6 +49,7 @@ file_logger = get_file_logger(__name__)
 
 
 config = ConfigInfo()
+pi = PathInfo()
 configApp = ConfigInfoAppBase()
 
 for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests"]:
@@ -290,11 +292,13 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
     return deposition
 
 
-def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, status_manager: StatusManager):
+def upload_files(test_dep_id: str, arch_dep_id: str, status_manager: StatusManager):
     # getting all files with the 'upload' milestone from the archive dir
-    previous_files = [f for f in os.listdir(os.path.join(base_files_location, "data")) if "upload_P" in f]
+    arch_data = pi.getTempDepPath(dataSetId=arch_dep_id)
+    arch_pickles = pi.getDirPath(dataSetId=arch_dep_id, fileSource="pickles")
+    previous_files = [f for f in os.listdir(arch_data) if "upload_P" in f]
     uploaded_files = []
-    contour_level, pixel_spacing = parse_voxel_values(os.path.join(base_files_location, "pickles", "em_map_upload.pkl"))
+    contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
 
     for f in previous_files:
         fobj = parse_filename(repository=ArchiveRepository.ARCHIVE.value, filename=f)
@@ -305,7 +309,7 @@ def upload_files(test_dep_id: str, arch_dep_id: str, base_files_location: str, s
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
-            file_path = os.path.join(base_files_location, "data", f)
+            file_path = os.path.join(arch_data, f)
             file = api.upload_file(test_dep_id, file_path, filetype, overwrite=False)
             uploaded_files.append(file)
 
@@ -389,48 +393,39 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
     status_manager.update_status(dep_id, status="working", message="Creating test deposition")    
     try:
         test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
-        # time.sleep(random.randint(1, 5))
     except Exception as e:
         raise Exception("Error creating test deposition") from e
 
     status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="onedep_test_")
-        base_dep_dir = os.path.join(tmp_dir, BASE_FILES_DIR, test_dep.dep_id)
-        os.makedirs(base_dep_dir, exist_ok=True)
-
-        fetcher.fetch(dep_id, base_dep_dir)
+        fetcher.fetch(dep_id)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
-    upload_files(test_dep_id=test_dep.dep_id, arch_dep_id=dep_id, base_files_location=base_dep_dir, status_manager=status_manager)
+    upload_files(test_dep_id=test_dep.dep_id, arch_dep_id=dep_id, status_manager=status_manager)
 
     copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
     response = api.process(test_dep.dep_id, **copy_elements)
     status = "started"
 
-    try:
-        while status in ("running", "started", "submit"):
-            response = api.get_status(test_dep.dep_id)
+    while status in ("running", "started", "submit"):
+        response = api.get_status(test_dep.dep_id)
 
-            if isinstance(response, DepositStatus):
-                if response.details == status_manager.get_status(dep_id).message:
-                    continue
+        if isinstance(response, DepositStatus):
+            if response.details == status_manager.get_status(dep_id).message:
+                continue
 
-                status_manager.update_status(dep_id, status="working", message=f"{response.details}")
-                status = response.status
+            status_manager.update_status(dep_id, status="working", message=f"{response.details}")
+            status = response.status
 
-                if status == "error":
-                    raise Exception(response.details)
-            elif isinstance(response, DepositError):
-                raise Exception(response.message)
-            else:
-                raise Exception(f"Unknown response type {type(response)}")
+            if status == "error":
+                raise Exception(response.details)
+        elif isinstance(response, DepositError):
+            raise Exception(response.message)
+        else:
+            raise Exception(f"Unknown response type {type(response)}")
 
-            time.sleep(5)
-    finally:
-        if not keep_temp:
-            shutil.rmtree(tmp_dir)
+        time.sleep(5)
 
 
 def get_entry_info(dep_id, status_manager):
@@ -515,16 +510,17 @@ def generate_table(status_manager):
 
 @click.command()
 @click.argument('dep_id_list', nargs=-1)
-@click.option('--reupload', is_flag=True, help='Test reupload after submission')
+@click.option('--force-fetch', is_flag=True, help="Force fetch from remote archive")
 @click.option('--keep-temp', is_flag=True, help='Keep temporary files')
 @click.option('--cache-location', default="/wwpdb/onedep/testcache", help='Cache location')
-def main(dep_id_list, reupload, keep_temp, cache_location):
+def main(dep_id_list, force_fetch, keep_temp, cache_location):
     if "pro" in getSiteId().lower():
         print("[!] this script should not be run in production. Exiting.")
         return
 
-    remote = RemoteArchive(host="localhost", user="onedep", root_path="/wwpdb/onedep")
-    fetcher = RemoteFetcher(remote, cache_location=cache_location)
+    remote = RemoteArchive(host="localhost", user="onedep", site_id="PDBE_DEV")
+    local = LocalArchive(site_id=getSiteId())
+    fetcher = RemoteFetcher(remote, local, force=force_fetch)
 
     with Live(refresh_per_second=15) as live:
         def update_callback():
@@ -555,7 +551,7 @@ def main(dep_id_list, reupload, keep_temp, cache_location):
                     file_logger.error("Error processing entry %s: %s", dep_id, e)
                     status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
             
-            futures_compare = {executor.submit()}
+            # futures_compare = {executor.submit()}
 
 
 if __name__ == '__main__':
