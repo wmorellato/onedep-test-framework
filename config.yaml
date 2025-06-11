@@ -1,0 +1,44 @@
+remote_archive:
+  host: localhost
+  user: oendep
+  site_id: PDBE_DEV
+
+compare_rules:
+  model.pdbx:
+    method: cifdiff
+    version: latest
+    categories:
+      - pdbx_contact_author
+  model-upload.pdbx:
+    method: cifdiff
+    version: original
+  model-upload-convert.pdbx:
+    method: cifdiff
+    version: latest
+  mapfix-header-report.json:
+    method: jsondiff
+    version: latest
+
+test_set:
+  D_8233000142:
+    tasks:
+      - upload
+      - compare_files:
+        source: self
+        rules:
+          - model.pdbx
+          - model-upload.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+      - compare_files:
+        - model.pdbx
+  D_8233000197:
+    tasks:
+      - compare_files:
+        source: D_8233000142
+        rules:
+          - model.pdbx
+          - model-upload.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json

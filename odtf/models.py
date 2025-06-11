@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import List, Dict
 
 from onedep_deposition.enum import FileType
 from onedep_deposition.models import (EMSubType, ExperimentType)
@@ -55,19 +57,11 @@ class FileTypeMapping:
             return FileTypeMapping.MAP[f"{content_type}.{format}"]
 
         raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
-    
-
-@dataclass
-class RemoteArchive:
-    host: str
-    user: str
-    site_id: str
-    key_file: str = None
 
 
-@dataclass
-class LocalArchive:
-    site_id: str
+class TaskType(Enum):
+    UPLOAD = "upload"
+    SUBMIT = "submit"
 
 
 @dataclass
@@ -77,12 +71,27 @@ class EntryStatus:
     arch_entry_id: str = "?"
     exp_type: ExperimentType = None
     exp_subtype: EMSubType = None
-    test_dep_id: str = "?"
+    copy_dep_id: str = "?"
     message: str = "Starting tests..."
 
     def __repr__(self):
-        return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.test_dep_id}, message={self.message})"
+        return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.copy_dep_id}, message={self.message})"
 
     def __str__(self):
         exp_type = self.exp_type.value if self.exp_type else "?"
-        return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.test_dep_id} {exp_type}: {self.message}"
+        return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.copy_dep_id} {exp_type}: {self.message}"
+
+
+@dataclass
+class CompareRule:
+    name: str
+    method: str
+    version: str
+    categories: List[str] = field(default_factory=list)
+
+
+# Dataclass for test_set entries
+@dataclass
+class TestEntry:
+    dep_id: str
+    tasks: Dict[TaskType, List[str]]

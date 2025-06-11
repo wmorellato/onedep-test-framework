@@ -7,28 +7,24 @@ django.setup()
 
 import pickle
 import concurrent.futures
-import hashlib
 import logging
-import shutil
-import subprocess
-import tempfile
 import threading
 import time
+from typing import List
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 
 import click
-import deepdiff
 import MySQLdb
 
-from rich.console import Console
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
 
-from odtf.archive import RemoteFetcher
 from odtf.common import get_file_logger
-from odtf.models import EntryStatus, FileTypeMapping, RemoteArchive, LocalArchive
+from odtf.models import EntryStatus, FileTypeMapping, TaskType, TestEntry
+from odtf.archive import RemoteFetcher, LocalArchive
+from odtf.compare import FileComparer, comparer_factory
+from odtf.config import Config
 
 from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
@@ -37,18 +33,15 @@ from onedep_deposition.models import (DepositError, DepositStatus, EMSubType,
 
 from wwpdb.apps.deposit.auth.tokens import create_token
 from wwpdb.apps.deposit.common.utils import parse_filename
-from wwpdb.apps.deposit.depui.constants import uploadDict
 from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
-from wwpdb.apps.deposit.main.schemas import ExperimentTypes
 from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
-from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase,
-                                              ConfigInfoAppCommon)
+from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
 
 file_logger = get_file_logger(__name__)
 
 
-config = ConfigInfo()
+ci = ConfigInfo()
 pi = PathInfo()
 configApp = ConfigInfoAppBase()
 
@@ -64,6 +57,13 @@ PROD_HOST = "pdb-002.ebi.ac.uk" # ENTER THIS
 PROD_CONFIG = ConfigInfo(siteId=PROD_SITE_ID)
 DEBUG = False
 
+prod_db = {
+    "host": PROD_CONFIG.get("SITE_DB_HOST_NAME"),
+    "user": PROD_CONFIG.get("SITE_DB_USER_NAME"),
+    "password": PROD_CONFIG.get("SITE_DB_PASSWORD"),
+    "port": int(PROD_CONFIG.get("SITE_DB_PORT_NUMBER")),
+    "database": "status",
+}
 
 def parse_voxel_values(filepath):
     """
@@ -99,170 +99,38 @@ class StatusManager:
     """
     Minimal thread-safety with your exact logic preserved.
     """
-    def __init__(self, dep_id_list, callback):
-        self.statuses = {dep_id: EntryStatus(arch_dep_id=dep_id) for dep_id in dep_id_list}
+    def __init__(self, test_set: List[TestEntry], callback):
+        self.statuses = {te.dep_id: EntryStatus(arch_dep_id=te.dep_id) for te in test_set}
         self.callback = callback
         self._lock = threading.RLock()
 
-    def update_status(self, dep_id, **kwargs):
+    def update_status(self, test_entry: TestEntry, **kwargs):
         with self._lock:
-            if dep_id not in self.statuses:
-                raise KeyError(f"DepID {dep_id} not found in statuses.")
+            if test_entry.dep_id not in self.statuses:
+                raise KeyError(f"DepID {test_entry.dep_id} not found in statuses.")
 
-            file_logger.info(str(self.statuses[dep_id]))
+            file_logger.info(str(self.statuses[test_entry.dep_id]))
 
             for key, value in kwargs.items():
-                if hasattr(self.statuses[dep_id], key):
-                    setattr(self.statuses[dep_id], key, value)
+                if hasattr(self.statuses[test_entry.dep_id], key):
+                    setattr(self.statuses[test_entry.dep_id], key, value)
                 else:
                     raise AttributeError(f"Invalid field '{key}' for EntryStatus.")
 
             if self.callback:
                 self.callback()
 
-    def get_status(self, dep_id):
+    def get_status(self, test_entry: TestEntry):
         with self._lock:
-            if dep_id not in self.statuses:
-                raise KeyError(f"DepID {dep_id} not found in statuses.")
-            return self.statuses[dep_id]
+            if test_entry.dep_id not in self.statuses:
+                raise KeyError(f"DepID {test_entry.dep_id} not found in statuses.")
+            return self.statuses[test_entry.dep_id]
 
     def __iter__(self):
         with self._lock:
             return iter(list(self.statuses.values()))
 
-
-prod_host = {
-    "host": PROD_HOST,
-    "user": PROD_CONFIG.get("LOCAL_SERVICE_OWNER"),
-    "onedep_root": PROD_CONFIG.get("TOP_SOFTWARE_DIR"),
-}
-
-prod_db = {
-    "host": PROD_CONFIG.get("SITE_DB_HOST_NAME"),
-    "user": PROD_CONFIG.get("SITE_DB_USER_NAME"),
-    "password": PROD_CONFIG.get("SITE_DB_PASSWORD"),
-    "port": int(PROD_CONFIG.get("SITE_DB_PORT_NUMBER")),
-    "database": "status",
-}
-
-# ConfigInfoData._contentTypeInfoBaseD {content-type: ([format], ?)}
-# ConfigInfoData._fileFormatExtensionD extensions
-
-test_file_catalogue = {
-    # exp type
-    ExperimentType.XRAY: {
-        # stage
-        "upload": {
-            "model": {
-                "comparer": "cifdiff",
-                "files": [
-                    # [milestone, version]
-                    ["upload", "original"],
-                    ["upload-convert", "latest"],
-                    [None, "latest"],
-                ]
-            },
-            "model-issues-report": {
-                "comparer": "jsondiff",
-                "files": [
-                    [None, "latest"],
-                ]
-            },
-            "structure-factors": {
-                "comparer": "cifdiff",
-                "files": [
-                    ["upload", "original"],
-                    ["upload-convert", "original"],
-                    [None, "latest"],
-                ]
-            },
-            "structure-factor-report": {
-                "comparer": "jsondiff",
-                "files": [
-                    [None, "latest"],
-                ]
-            },
-            "chem-comp-assign-details": {
-                "comparer": "checksum",
-                "files": [
-                    [None, "latest"],
-                ]
-            },
-            "assembly-model": {
-                "comparer": "cifdiff",
-                "files": [
-                    [None, "latest"],
-                ]
-            }
-        },
-        "reupload": {
-            "merge-xyz-report": {
-                "comparer": "default",
-                "files": [
-                    [None, "latest"],
-                ]
-            },
-        },
-        "pre-submission": {
-            "chem-comp-depositor-info": {
-                "comparer": "default",
-                "files": [
-                    [None, "latest"],
-                ]
-            }
-        }
-    },
-    ExperimentType.EM: {
-        "upload": {
-            "model": {
-                "comparer": "cifdiff",
-                "files": [
-                    ["upload", "original"],
-                    ["upload-convert", "latest"],
-                    [None, "latest"],
-                ]
-            },
-            "mapfix-header-report": {
-                "comparer": "checksum",
-                "files": [
-                    [None, "latest"],
-                ]
-            }
-        }
-    },
-    ExperimentType.NMR: {
-
-    }
-}
-
-BASE_FILES_DIR = "base"
-UPLOAD_FILES_DIR = "upload"
-
 api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
-
-
-def cifdiff(file1, file2):
-    command = ['gemmi', 'cifdiff', '-q', file1, file2]
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"cifdiff failed with error: {result.stderr.strip()}")
-
-    output_lines = result.stdout.splitlines()
-    differences = []
-
-    pattern = re.compile(r'^\s*(_\S+)\.\s+rows:\s+(\d+)(\s+->\s+(\d+))?')
-    for line in output_lines:
-        match = pattern.match(line)
-        if match:
-            category = match.group(1)
-            old_rows = int(match.group(2))
-            new_rows = int(match.group(4)) if match.group(4) else old_rows
-            if old_rows != new_rows:
-                differences.append((category, old_rows, new_rows))
-
-    return differences
-
 
 def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
     """NOTE: if this code ever moves to a separate package, the deposition
@@ -292,10 +160,10 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
     return deposition
 
 
-def upload_files(test_dep_id: str, arch_dep_id: str, status_manager: StatusManager):
+def upload_files(copy_dep_id: str, test_entry: TestEntry, status_manager: StatusManager):
     # getting all files with the 'upload' milestone from the archive dir
-    arch_data = pi.getTempDepPath(dataSetId=arch_dep_id)
-    arch_pickles = pi.getDirPath(dataSetId=arch_dep_id, fileSource="pickles")
+    arch_data = pi.getTempDepPath(dataSetId=test_entry.dep_id)
+    arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     previous_files = [f for f in os.listdir(arch_data) if "upload_P" in f]
     uploaded_files = []
     contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
@@ -305,25 +173,25 @@ def upload_files(test_dep_id: str, arch_dep_id: str, status_manager: StatusManag
         content_type = fobj.getContentType()
         file_format = fobj.getFileFormat()
 
-        status_manager.update_status(arch_dep_id, message=f"Uploading `{content_type}.{file_format}`")
+        status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}`")
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
             file_path = os.path.join(arch_data, f)
-            file = api.upload_file(test_dep_id, file_path, filetype, overwrite=False)
+            file = api.upload_file(copy_dep_id, file_path, filetype, overwrite=False)
             uploaded_files.append(file)
 
             if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
-                if contour_level is not None:
-                    status_manager.update_status(arch_dep_id, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
-                    api.update_metadata(test_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
+                if contour_level:
+                    status_manager.update_status(test_entry, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
+                    api.update_metadata(copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
                 else:
                     raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
         except ValueError as e:
-            status_manager.update_status(arch_dep_id, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
+            status_manager.update_status(test_entry, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
             raise
         except:
-            status_manager.update_status(arch_dep_id, status="failed", message=f"Error uploading {content_type} {file_format}")
+            status_manager.update_status(test_entry, status="failed", message=f"Error uploading {content_type} {file_format}")
             raise
 
     return uploaded_files
@@ -348,74 +216,74 @@ def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
             print("[!] failed to upload %s, %s" % (test_file, e))
 
 
-def compare_files(test_dep_id: str, arch_dep_id: str, base_dep_dir: str, status_manager, step="upload"):
+def compare_files(copy_dep_id: str, arch_dep_id: str, config: Config, status_manager: StatusManager):
     exp_type = status_manager.get_status(arch_dep_id).exp_type
     lfs = LocalFileSystem()
 
-    def calculate_md5(file_path):
-        with open(file_path, "rb") as file:
-            md5_hash = hashlib.md5()
-            while chunk := file.read(4096):
-                md5_hash.update(chunk)
-        return md5_hash.hexdigest()
-
-    # now this is hack to find the files easily: I move the base files to
-    # a subdir in tempdep and use LocalFileSystem to locate them
-
-    for f in test_file_catalogue[exp_type][step].values():
-        target_wdo = lfs.locate(dep_id=test_dep_id, repository=ArchiveRepository.DEPOSIT, content=f[0], format=f[1], version=f[2], milestone=f[3])
-        target_path = target_wdo.getFilePathReference()
-        # target_version = target_wdo.getFileVersionNumber()
-
-        base_wdo = lfs.locate(dep_id=arch_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[0], format=f[1], version=f[2], milestone=f[3])
-        base_path = base_wdo.getFilePathReference()
-        if not lfs.exists(base_wdo):
-            console.print(f"[yellow]base file not found: {base_path}[/yellow]")
+    for ctype in test_file_catalogue[exp_type][step].values():
+        comparer = comparer_factory(ctype["comparer"])
+        if not comparer:
+            status_manager.update_status(arch_dep_id, status="failed", message=f"Unknown comparer type: {f['comparer']}")
             continue
-        # base_filename = os.path.basename(base_wdo.getFilePathReference())
-        # base_path = os.path.join(base_files_location, base_filename)
 
-        base_md5 = calculate_md5(base_path)
-        target_md5 = calculate_md5(target_path)
+        for ftype in ctype["files"]:
+            arch_wdo = lfs.locate(dep_id=copy_dep_id, repository=ArchiveRepository.DEPOSIT, content=ctype, format=f[1], version=f[2], milestone=f[3])
+            target_path = arch_wdo.getFilePathReference()
+            # target_version = target_wdo.getFileVersionNumber()
 
-        if base_md5 == target_md5:
-            console.print(f"[green]base: {base_path} deposit: {target_path}[/green]")
-        else:
-            console.print(f"[red]base: {base_path} deposit: {target_path}[/red]")
-            if f[1] == "pdbx":
-                cifdiff(base_path, target_path)
+            base_wdo = lfs.locate(dep_id=arch_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[0], format=f[1], version=f[2], milestone=f[3])
+            base_path = base_wdo.getFilePathReference()
+            if not lfs.exists(base_wdo):
+                console.print(f"[yellow]base file not found: {base_path}[/yellow]")
+                continue
+            # base_filename = os.path.basename(base_wdo.getFilePathReference())
+            # base_path = os.path.join(base_files_location, base_filename)
+
+            base_md5 = calculate_md5(base_path)
+            target_md5 = calculate_md5(target_path)
+
+            if base_md5 == target_md5:
+                console.print(f"[green]base: {base_path} deposit: {target_path}[/green]")
+            else:
+                console.print(f"[red]base: {base_path} deposit: {target_path}[/red]")
+                if f[1] == "pdbx":
+                    cifdiff(base_path, target_path)
 
 
-def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusManager, keep_temp=False):
-    exp_type = status_manager.get_status(dep_id).exp_type # feels hackish
-    exp_subtype = status_manager.get_status(dep_id).exp_subtype # feels hackish
+def create_and_process(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    remote = config.get_remote_archive()
+    local = LocalArchive(site_id=getSiteId())
+    fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
 
-    status_manager.update_status(dep_id, status="working", message="Creating test deposition")    
+    exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
+    exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
+
+    status_manager.update_status(test_entry, status="working", message="Creating test deposition")    
     try:
-        test_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+        copy_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
     except Exception as e:
         raise Exception("Error creating test deposition") from e
 
-    status_manager.update_status(dep_id, test_dep_id=test_dep.dep_id, message="Fetching files from archive")
+    status_manager.update_status(test_entry, copy_dep_id=copy_dep.dep_id, message="Fetching files from archive")
     try:
-        fetcher.fetch(dep_id)
+        fetcher.fetch(test_entry.dep_id)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
-    upload_files(test_dep_id=test_dep.dep_id, arch_dep_id=dep_id, status_manager=status_manager)
+    upload_files(copy_dep_id=copy_dep.dep_id, test_entry=test_entry, status_manager=status_manager)
 
     copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-    response = api.process(test_dep.dep_id, **copy_elements)
+    response = api.process(copy_dep.dep_id, **copy_elements)
     status = "started"
 
     while status in ("running", "started", "submit"):
-        response = api.get_status(test_dep.dep_id)
+        response = api.get_status(copy_dep.dep_id)
 
         if isinstance(response, DepositStatus):
-            if response.details == status_manager.get_status(dep_id).message:
+            if response.details == status_manager.get_status(test_entry).message:
                 continue
 
-            status_manager.update_status(dep_id, status="working", message=f"{response.details}")
+            status_manager.update_status(test_entry, status="working", message=f"{response.details}")
             status = response.status
 
             if status == "error":
@@ -428,15 +296,16 @@ def create_and_process(dep_id, fetcher: RemoteFetcher, status_manager: StatusMan
         time.sleep(5)
 
 
-def get_entry_info(dep_id, status_manager):
+def get_entry_info(test_entry: TestEntry, status_manager: StatusManager):
     """Part of the main testing pipeline, hence the status_manager here. Only Jesus can judge me
+    This should be using the API.
     """
     connection = MySQLdb.connect(**prod_db)
-    status_manager.update_status(dep_id, status="working", message="Getting entry info")
+    status_manager.update_status(test_entry, status="working", message="Getting entry info")
 
     try:
         with connection.cursor() as cursor:
-            sql = "SELECT pdb_id, emdb_id, bmrb_id, exp_method FROM deposition WHERE dep_set_id = '%s'" % dep_id.upper()
+            sql = "SELECT pdb_id, emdb_id, bmrb_id, exp_method FROM deposition WHERE dep_set_id = '%s'" % test_entry.dep_id.upper()
             cursor.execute(sql)
             result = cursor.fetchall()
             
@@ -477,7 +346,7 @@ def get_entry_info(dep_id, status_manager):
                 exp_method = ExperimentType.NEUTRON
 
             status_manager.update_status(
-                dep_id,
+                test_entry,
                 arch_entry_id=eid,
                 exp_type=exp_method,
                 exp_subtype=exp_submethod,
@@ -495,53 +364,54 @@ def generate_table(status_manager):
         arch_dep_id = entry_status.arch_dep_id
         arch_entry_id = entry_status.arch_entry_id
         exp_type = entry_status.exp_type.value if entry_status.exp_type else "?"
-        test_dep_id = entry_status.test_dep_id
+        copy_dep_id = entry_status.copy_dep_id
         message = entry_status.message
 
         if entry_status.status in ("working", "pending"):
-            table.add_row(spinner, f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
+            table.add_row(spinner, f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {copy_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
         elif entry_status.status == "finished":
-            table.add_row("[green]✓[/green]", f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
+            table.add_row("[green]✓[/green]", f"{arch_dep_id} [bright_cyan]({arch_entry_id})[/bright_cyan] → {copy_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
         elif entry_status.status == "failed":
-            table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {test_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
+            table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {copy_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
 
     return table
 
 
 @click.command()
-@click.argument('dep_id_list', nargs=-1)
+@click.argument('test_config', type=click.Path(exists=True, dir_okay=False, readable=True), required=True)
+# @click.option('--config-file', default=None, help='Path to the configuration file. Defaults to ~/.odtf/config.yaml.')
 @click.option('--force-fetch', is_flag=True, help="Force fetch from remote archive")
 @click.option('--keep-temp', is_flag=True, help='Keep temporary files')
 @click.option('--cache-location', default="/wwpdb/onedep/testcache", help='Cache location')
-def main(dep_id_list, force_fetch, keep_temp, cache_location):
-    if "pro" in getSiteId().lower():
-        print("[!] this script should not be run in production. Exiting.")
+def main(test_config, force_fetch, keep_temp, cache_location):
+    """TEST_CONFIG is the path to the test configuration file.
+    """
+    if "pro" in getSiteId().lower(): # get the production ids from config
+        click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
 
-    remote = RemoteArchive(host="localhost", user="onedep", site_id="PDBE_DEV")
-    local = LocalArchive(site_id=getSiteId())
-    fetcher = RemoteFetcher(remote, local, force=force_fetch)
+    config = Config(test_config)
+    test_set = config.get_test_set()
 
     with Live(refresh_per_second=15) as live:
         def update_callback():
             """Callback to update the live display"""
             live.update(generate_table(status_manager))
 
-        # Use the simpler thread-safe version
-        status_manager = StatusManager(dep_id_list, callback=update_callback)
+        status_manager = StatusManager(test_set, callback=update_callback)
         live.update(generate_table(status_manager))
-        
+
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures_info = {executor.submit(get_entry_info, dep_id, status_manager): dep_id for dep_id in dep_id_list}
+            futures_info = {executor.submit(get_entry_info, te, status_manager): te.dep_id for te in test_set}
 
             for future in concurrent.futures.as_completed(futures_info):
                 dep_id = futures_info[future]
                 try:
                     future.result()
                 except Exception as e:
-                    status_manager.update_status(dep_id, status="failed", message=f"Error getting entry info ({e})")
+                    status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error getting entry info ({e})")
 
-            futures_process = {executor.submit(create_and_process, dep_id, fetcher, status_manager, False): dep_id for dep_id in dep_id_list}
+            futures_process = {executor.submit(create_and_process, te, config, status_manager): te.dep_id for te in test_set}
 
             for future in concurrent.futures.as_completed(futures_process):
                 dep_id = futures_process[future]
@@ -549,8 +419,8 @@ def main(dep_id_list, force_fetch, keep_temp, cache_location):
                     future.result()
                 except Exception as e:
                     file_logger.error("Error processing entry %s: %s", dep_id, e)
-                    status_manager.update_status(dep_id, status="failed", message=f"Error processing entry ({e})")
-            
+                    status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
+
             # futures_compare = {executor.submit()}
 
 

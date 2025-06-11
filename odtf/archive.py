@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 
+from dataclasses import dataclass
 from typing import Callable, List
 
 from wwpdb.apps.deposit.common.utils import parse_filename
@@ -11,9 +12,21 @@ from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.io.locator.DataReference import DataFileReference
 
 from odtf.common import get_file_logger
-from odtf.models import RemoteArchive, LocalArchive
 
 file_logger = get_file_logger(__name__)
+
+
+@dataclass
+class RemoteArchive:
+    host: str
+    user: str
+    site_id: str
+    key_file: str = None
+
+
+@dataclass
+class LocalArchive:
+    site_id: str
 
 
 class FileFinder:
@@ -44,6 +57,7 @@ class FileFinder:
 
         if filters:
             for filter_func in filters:
+                # AND operation
                 files = list(filter(filter_func, files))
 
         return [f._DataFileReference__getInternalFileNameVersioned() for f in files]
@@ -104,8 +118,7 @@ class FileFinder:
 
 
 class RemoteFetcher:
-    """This needs refactoring. Quick and dirty without thinking about the local
-    directory.
+    """Fetches depositions from a remote archive and stores them in a local archive.
     """
     def __init__(self, remote_archive: RemoteArchive, local_archive: LocalArchive, cache_size=10, force=False):
         self.remote_archive = remote_archive
@@ -116,14 +129,12 @@ class RemoteFetcher:
         self.force = force
 
     def fetch(self, dep_id, repository="deposit"):
-        """ Fetches a deposition from the remote archive and stores it in the local cache.
-        If the deposition is already cached, it copies it to the destination.
-        If the cache is full, it evicts the oldest entry.
+        """ Fetches a deposition from the remote archive and stores it in the local
+        tempdep directory.
 
         Args:
             dep_id (str): The deposition ID to fetch.
-            destination (str): The local path where the deposition should be copied. No manipulation is done to this path before copy.
-            repository (str): The repository from which to fetch the deposition. Defaults to "deposit".
+            repository (str): The repository from which to fetch the deposition.
         """
         if self._local_exists(dep_id) and not self.force:
             return
