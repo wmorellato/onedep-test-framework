@@ -21,7 +21,7 @@ from rich.spinner import Spinner
 from rich.table import Table
 
 from odtf.common import get_file_logger
-from odtf.models import EntryStatus, FileTypeMapping, TaskType, TestEntry
+from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task
 from odtf.archive import RemoteFetcher, LocalArchive
 from odtf.compare import FileComparer, comparer_factory
 from odtf.config import Config
@@ -216,38 +216,30 @@ def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
             print("[!] failed to upload %s, %s" % (test_file, e))
 
 
-def compare_files(copy_dep_id: str, arch_dep_id: str, config: Config, status_manager: StatusManager):
-    exp_type = status_manager.get_status(arch_dep_id).exp_type
+def compare_files(test_entry: TestEntry, config: Config, status_manager: StatusManager, source=None):
     lfs = LocalFileSystem()
 
-    for ctype in test_file_catalogue[exp_type][step].values():
-        comparer = comparer_factory(ctype["comparer"])
-        if not comparer:
-            status_manager.update_status(arch_dep_id, status="failed", message=f"Unknown comparer type: {f['comparer']}")
-            continue
+    ctask = test_entry.tasks[TaskType.COMPARE_FILES]
+    for rname in ctask.rules:
+        if ctask.source == "copy":
+            if not source:
+                raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
+            ctask.source = source
 
-        for ftype in ctype["files"]:
-            arch_wdo = lfs.locate(dep_id=copy_dep_id, repository=ArchiveRepository.DEPOSIT, content=ctype, format=f[1], version=f[2], milestone=f[3])
-            target_path = arch_wdo.getFilePathReference()
-            # target_version = target_wdo.getFileVersionNumber()
+        rule = config.get_compare_rule(rname)
+        content_type, format = rule.name.split(".")
 
-            base_wdo = lfs.locate(dep_id=arch_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[0], format=f[1], version=f[2], milestone=f[3])
-            base_path = base_wdo.getFilePathReference()
-            if not lfs.exists(base_wdo):
-                console.print(f"[yellow]base file not found: {base_path}[/yellow]")
-                continue
-            # base_filename = os.path.basename(base_wdo.getFilePathReference())
-            # base_path = os.path.join(base_files_location, base_filename)
+        copy_wdo = lfs.locate(dep_id=ctask.source, repository=ArchiveRepository.DEPOSIT, content=content_type, format=format, version=rule.version)
+        copy_file_path = copy_wdo.getFilePathReference()
 
-            base_md5 = calculate_md5(base_path)
-            target_md5 = calculate_md5(target_path)
+        test_entry_wdo = lfs.locate(dep_id=test_entry.dep_id, repository=ArchiveRepository.TEMPDEP, content=content_type, format=format, version=rule.version)
+        test_entry_file_path = test_entry_wdo.getFilePathReference()
+        if not lfs.exists(test_entry_wdo):
+            raise FileNotFoundError(f"Test entry file {test_entry_file_path} not found in local archive.")
 
-            if base_md5 == target_md5:
-                console.print(f"[green]base: {base_path} deposit: {target_path}[/green]")
-            else:
-                console.print(f"[red]base: {base_path} deposit: {target_path}[/red]")
-                if f[1] == "pdbx":
-                    cifdiff(base_path, target_path)
+        comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
+        if not comparer.compare():
+            status_manager.update_status(test_entry, message=f"[red]Comparison failed for {content_type}.{format} using {rule.method}[/red]")
 
 
 def create_and_process(test_entry: TestEntry, config: Config, status_manager: StatusManager):
@@ -355,6 +347,21 @@ def get_entry_info(test_entry: TestEntry, status_manager: StatusManager):
         connection.close()
 
 
+def run_tasks(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    """Run all tasks for a given test entry"""
+    status_manager.update_status(test_entry, status="working", message="Running tasks")
+    
+    # Get entry info first
+    get_entry_info(test_entry, status_manager)
+
+    # Create and process the deposition
+    create_and_process(test_entry, config, status_manager)
+
+    # Compare files if applicable
+    if test_entry.has_task(TaskType.COMPARE_FILES):
+        compare_files(test_entry, config, status_manager)
+
+
 def generate_table(status_manager):
     """Generate status table for display with spinners"""
     table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
@@ -375,6 +382,19 @@ def generate_table(status_manager):
             table.add_row("[red]✗[/red]", f"[red]{arch_dep_id}[/red] [bright_cyan]({arch_entry_id})[/bright_cyan] → {copy_dep_id} [bright_cyan]{exp_type:<5}[/bright_cyan] {message}")
 
     return table
+
+
+def run_entry_tasks(entry, config, status_manager):
+    """Run all tasks for a single entry sequentially."""
+    get_entry_info(entry, status_manager)
+
+    for task_type, task_params in entry.tasks.items():
+        if task_type == TaskType.UPLOAD:
+            create_and_process(entry, config, status_manager)
+        elif task_type == TaskType.COMPARE_FILES:
+            compare_files(entry, config, status_manager)
+        else:
+            file_logger.warning("Unknown task type %s for entry %s", task_type, entry.dep_id)
 
 
 @click.command()
@@ -411,7 +431,7 @@ def main(test_config, force_fetch, keep_temp, cache_location):
                 except Exception as e:
                     status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error getting entry info ({e})")
 
-            futures_process = {executor.submit(create_and_process, te, config, status_manager): te.dep_id for te in test_set}
+            futures_process = {executor.submit(create_and_process, te, config, status_manager): te.dep_id for te in test_set if te.has_task(TaskType.UPLOAD)}
 
             for future in concurrent.futures.as_completed(futures_process):
                 dep_id = futures_process[future]
@@ -421,7 +441,15 @@ def main(test_config, force_fetch, keep_temp, cache_location):
                     file_logger.error("Error processing entry %s: %s", dep_id, e)
                     status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
 
-            # futures_compare = {executor.submit()}
+            futures_compare = {executor.submit(compare_files, te, config, status_manager): te.dep_id for te in test_set if te.has_task(TaskType.COMPARE_FILES)}
+
+            for future in concurrent.futures.as_completed(futures_compare):
+                dep_id = futures_compare[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    file_logger.error("Error comparing files for entry %s: %s", dep_id, e)
+                    status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error comparing files ({e})")
 
 
 if __name__ == '__main__':

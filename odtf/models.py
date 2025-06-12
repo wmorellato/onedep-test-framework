@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from onedep_deposition.enum import FileType
 from onedep_deposition.models import (EMSubType, ExperimentType)
@@ -62,6 +62,52 @@ class FileTypeMapping:
 class TaskType(Enum):
     UPLOAD = "upload"
     SUBMIT = "submit"
+    COMPARE_FILES = "compare_files"
+
+
+@dataclass
+class Task:
+    type: TaskType
+
+
+@dataclass
+class UploadTask(Task):
+    def __init__(self):
+        super().__init__(type=TaskType.UPLOAD)
+
+
+@dataclass
+class SubmitTask(Task):
+    def __init__(self):
+        super().__init__(type=TaskType.SUBMIT)
+
+
+@dataclass
+class CompareRule:
+    name: str
+    method: str
+    version: str
+    categories: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CompareFilesTask(Task):
+    source: Optional[str] = None
+    rules: List[CompareRule] = field(default_factory=list)
+
+    def __init__(self, source: Optional[str], rules: List[str]):
+        super().__init__(type=TaskType.COMPARE_FILES)
+        self.source = source
+        self.rules = rules
+
+
+@dataclass
+class TestEntry:
+    dep_id: str
+    tasks: List[Task] = field(default_factory=list)
+
+    def has_task(self, task_type: TaskType) -> bool:
+        return any(task.type == task_type for task in self.tasks)
 
 
 @dataclass
@@ -80,18 +126,3 @@ class EntryStatus:
     def __str__(self):
         exp_type = self.exp_type.value if self.exp_type else "?"
         return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.copy_dep_id} {exp_type}: {self.message}"
-
-
-@dataclass
-class CompareRule:
-    name: str
-    method: str
-    version: str
-    categories: List[str] = field(default_factory=list)
-
-
-# Dataclass for test_set entries
-@dataclass
-class TestEntry:
-    dep_id: str
-    tasks: Dict[TaskType, List[str]]

@@ -20,19 +20,19 @@ compare_rules:
     version: latest
 
 test_set:
-  D_8233000142:
-    tasks:
-      - upload
-      - compare_files:
-        source: self
-        rules:
-          - model.pdbx
-          - model-upload.pdbx
-          - model-upload-convert.pdbx
-          - mapfix-header-report.json
-      - submit
-      - compare_files:
-        - model.pdbx
+  # D_8233000142:
+  #   tasks:
+  #     - upload
+  #     - compare_files:
+  #       source: copy
+  #       rules:
+  #         - model.pdbx
+  #         - model-upload.pdbx
+  #         - model-upload-convert.pdbx
+  #         - mapfix-header-report.json
+  #     - submit
+  #     - compare_files:
+  #       - model.pdbx
   D_8233000197:
     tasks:
       - compare_files:
