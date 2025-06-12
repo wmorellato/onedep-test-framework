@@ -62,11 +62,11 @@ class CIFComparer(FileComparer):
 
         return differences
 
-    def compare(self, categories) -> bool:
+    def compare(self, categories = []) -> bool:
         """
         Compare files based on CIF categories (example logic).
         """
-        return bool(self._cifdiff(self.file1, self.file2))
+        return not bool(self._cifdiff(self.file1, self.file2))
 
 
 class JSONComparer(FileComparer):
