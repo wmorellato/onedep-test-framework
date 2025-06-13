@@ -1,3 +1,5 @@
+import os
+
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse, parse_qs, urlencode
@@ -5,6 +7,9 @@ from pathlib import Path
 import re
 
 from wwpdb.io.locator.PathInfo import PathInfo
+
+
+# TODO: Implement RemoteBackend
 
 
 class WwPDBResourceURI:
@@ -25,27 +30,27 @@ class WwPDBResourceURI:
         # Parse path components
         path_parts = [p for p in self.parsed.path.split('/') if p]
 
-        if len(path_parts) < 1:
+        if not self.parsed.netloc:
             raise ValueError("URI must specify at least a repository")
 
-        self.repository = path_parts[0]  # archive, deposit, tempdep, etc. TODO: create enum
-        self.dep_id = path_parts[1] if len(path_parts) > 1 else None
+        self.repository = self.parsed.netloc  # archive, deposit, tempdep, etc. TODO: create enum
+        self.dep_id = path_parts[0] if len(path_parts) > 0 else None
 
         # Check if this is a file (has content.format in path)
-        if len(path_parts) > 2:
+        if len(path_parts) > 1:
             # File path: wwpdb://repo/dep_id/content.format
-            file_part = path_parts[2]
+            file_part = path_parts[1]
             if '.' in file_part:
                 parts = file_part.split('.')
                 self.content_type = parts[0]
-                self.file_format = parts[1]
+                self.format = parts[1]
                 self.is_directory = False
             else:
                 raise ValueError("File path must be in format content.format")
         else:
             # Directory path
             self.content_type = None
-            self.file_format = None
+            self.format = None
             self.is_directory = self.parsed.path.endswith('/') or not self.dep_id
 
         # Parse query parameters for additional file metadata
@@ -63,11 +68,11 @@ class WwPDBResourceURI:
 
     @classmethod
     def for_file(cls, repository: str, dep_id: str, content_type: str, 
-                 file_format: str, part_number: Optional[int] = None, 
+                 format: str, part_number: Optional[int] = None, 
                  version: Optional[str] = None) -> 'WwPDBResourceURI':
         """Create URI for a specific file based on parameters"""
         # Build path with content.format
-        path = f"wwpdb://{repository}/{dep_id}/{content_type}.{file_format}"
+        path = f"wwpdb://{repository}/{dep_id}/{content_type}.{format}"
 
         # Add query parameters for metadata
         params = {}
@@ -82,6 +87,21 @@ class WwPDBResourceURI:
         else:
             return cls(path)
 
+    def join_file(self, content_type: str, format: str, 
+                  part_number: Optional[int] = 1, version: Optional[str] = "latest") -> 'WwPDBResourceURI':
+        """Create a file URI by extending this directory URI"""
+        if not self.is_directory:
+            raise ValueError("Can only join files to directory URIs")
+        
+        return WwPDBResourceURI.for_file(
+            repository=self.repository,
+            dep_id=self.dep_id,
+            content_type=content_type,
+            format=format,
+            part_number=part_number,
+            version=version
+        )
+
     def __str__(self):
         return self.uri
 
@@ -89,9 +109,9 @@ class WwPDBResourceURI:
         """Get content type from path"""
         return self.content_type
 
-    def get_file_format(self) -> Optional[str]:
+    def get_format(self) -> Optional[str]:
         """Get file format from path"""
-        return self.file_format
+        return self.format
 
     def get_part_number(self) -> Optional[int]:
         """Get part number from parameters"""
@@ -104,7 +124,7 @@ class WwPDBResourceURI:
 
     def is_file_uri(self) -> bool:
         """Check if this URI represents a file (has content.format in path)"""
-        return self.content_type is not None and self.file_format is not None
+        return self.content_type is not None and self.format is not None
 
 
 class FileNameBuilder:
@@ -130,7 +150,7 @@ class FileNameBuilder:
         self.filename_content_to_type = {filename_type: content_type 
                                         for content_type, (_, filename_type) in content_type_config.items()}
 
-    def build_filename(self, dep_id: str, content_type: str, file_format: str,
+    def build_filename(self, dep_id: str, content_type: str, format: str,
                       part_number: int = 1, version: Optional[str] = None) -> str:
         """
         Build filename from parameters
@@ -144,14 +164,14 @@ class FileNameBuilder:
         allowed_formats, filename_content_type = self.content_type_config[content_type]
 
         # Check if format is allowed for this content type (unless "any" is specified)
-        if "any" not in allowed_formats and file_format not in allowed_formats:
-            raise ValueError(f"Format '{file_format}' not allowed for content type '{content_type}'. "
+        if "any" not in allowed_formats and format not in allowed_formats:
+            raise ValueError(f"Format '{format}' not allowed for content type '{content_type}'. "
                            f"Allowed formats: {allowed_formats}")
 
-        if file_format not in self.format_extension_d:
-            raise ValueError(f"Unknown file format: {file_format}")
+        if format not in self.format_extension_d:
+            raise ValueError(f"Unknown file format: {format}")
 
-        extension = self.format_extension_d[file_format]
+        extension = self.format_extension_d[format]
 
         # Use the filename content type (may be different from logical content type)
         content_part = filename_content_type
@@ -168,7 +188,7 @@ class FileNameBuilder:
         """
         Parse filename to extract parameters
 
-        Returns dict with: dep_id, content_type, file_format, part_number, version
+        Returns dict with: dep_id, content_type, format, part_number, version
         """
         # Pattern: D_XXXXXXX_content_P#.format[.V#]
         # milestone can be treated as a separate content-type
@@ -189,14 +209,14 @@ class FileNameBuilder:
             raise ValueError(f"Unknown filename content type: {filename_content_type}")
 
         # Find file format from extension
-        file_format = self.extension_to_format.get(extension)
-        if not file_format:
+        format = self.extension_to_format.get(extension)
+        if not format:
             raise ValueError(f"Unknown file extension: {extension}")
 
         return {
             'dep_id': dep_id,
             'content_type': content_type,
-            'file_format': file_format,
+            'format': format,
             'part_number': int(part_str),
             'version': version,
         }
@@ -207,6 +227,10 @@ class StorageBackend(ABC):
     Abstract storage backend interface.
     Extendable for filesystem, S3, etc. without modifying existing code.
     """
+    @abstractmethod
+    def locate(self, uri: WwPDBResourceURI) -> Path:
+        """Get the filesystem path for this URI"""
+        pass
 
     @abstractmethod
     def exists(self, uri: WwPDBResourceURI) -> bool:
@@ -216,21 +240,6 @@ class StorageBackend(ABC):
     @abstractmethod
     def list_directory(self, uri: WwPDBResourceURI, **filters) -> List[WwPDBResourceURI]:
         """List files in directory with optional filters"""
-        pass
-
-    @abstractmethod
-    def read_file(self, uri: WwPDBResourceURI) -> bytes:
-        """Read file content"""
-        pass
-
-    @abstractmethod
-    def write_file(self, uri: WwPDBResourceURI, data: bytes) -> None:
-        """Write file content"""
-        pass
-
-    @abstractmethod
-    def delete(self, uri: WwPDBResourceURI) -> None:
-        """Delete resource"""
         pass
 
     @abstractmethod
@@ -252,30 +261,34 @@ class FilesystemBackend(StorageBackend):
     def _resolve_path(self, uri: WwPDBResourceURI) -> Path:
         """Resolve URI to filesystem path"""
         if uri.is_file_uri():
-            # self.path_info.getFilePath(
-            #     dataSetId=uri.dep_id,
-            #     contentType=uri.content_type,
-            #     fileFormat=uri.file_format,
-            #     fileSource=uri.repository,
-            #     versionId=uri.get_version(),
-            #     partNumber=uri.get_part_number() or 1
-            # )
-
-            # Build filename from path and parameters
-            filename = self.filename_builder.build_filename(
-                dep_id=uri.dep_id,
-                content_type=uri.content_type,
-                file_format=uri.file_format,
-                part_number=uri.get_part_number() or 1,
-                version=uri.get_version()
-            )
-            return self.base_path / uri.repository / uri.dep_id / filename
+            return Path(self.path_info.getFilePath(
+                dataSetId=uri.dep_id,
+                contentType=uri.content_type,
+                fileFormat=uri.format,
+                fileSource=uri.repository,
+                versionId=uri.get_version(),
+                partNumber=uri.get_part_number() or 1
+            ))
         else:
-            # Directory path
             if uri.dep_id:
-                return self.base_path / uri.repository / uri.dep_id
+                return self.path_info.getDirPath(
+                    dataSetId=uri.dep_id,
+                    fileSource=uri.repository
+                )
             else:
-                return self.base_path / uri.repository
+                path = self.path_info.getDirPath(
+                    dataSetId='D_000001',
+                    fileSource=uri.repository
+                )
+
+                if path:
+                    return Path(path).parent
+
+                # raise?
+
+    def locate(self, uri: WwPDBResourceURI) -> Path:
+        """Get the filesystem path for this URI"""
+        return self._resolve_path(uri)
 
     def exists(self, uri: WwPDBResourceURI) -> bool:
         """Check if resource exists"""
@@ -320,14 +333,13 @@ class FilesystemBackend(StorageBackend):
                     repository=uri.repository,
                     dep_id=parsed['dep_id'],
                     content_type=parsed['content_type'],
-                    file_format=parsed['file_format'],
+                    format=parsed['format'],
                     part_number=parsed['part_number'],
                     version=parsed['version']
                 )
                 results.append(file_uri)
 
             except ValueError:
-                # Skip files that don't match naming convention
                 continue
 
         return results
@@ -420,7 +432,7 @@ def main():
         repository='deposit',
         dep_id='D_8233000142',
         content_type='model-upload', # with milestone
-        file_format='pdbx',
+        format='pdbx',
         part_number=1,
         version='2',
     )

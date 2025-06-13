@@ -82,7 +82,15 @@ class RemoteFetcher:
             # we'll have to build the pickles path manually
             file_logger.debug("Copying locally from %s to %s", remote_data_path, local_data_path)
             shutil.copytree(remote_data_path, local_data_path, dirs_exist_ok=True)
-            remote_pickles_path = os.path.join(os.path.dirname(self.local_pi.getDepositPath(dataSetId=dep_id)), "temp_files", "deposition-v-200", dep_id)
+
+            if repository == "deposit":
+                remote_pickles_path = os.path.join(os.path.dirname(self.local_pi.getDepositPath(dataSetId=dep_id)), "temp_files", "deposition-v-200", dep_id)
+            elif repository == "deposit-ui":
+                remote_pickles_path = os.path.join(os.path.dirname(self.local_pi.getDepositUIPath(dataSetId=dep_id)), "temp_files", "deposition-v-200", dep_id)
+
+            if remote_pickles_path == local_pickles_path:
+                return
+
             shutil.copytree(remote_pickles_path, local_pickles_path, dirs_exist_ok=True)
             return
 

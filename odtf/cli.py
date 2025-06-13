@@ -24,7 +24,7 @@ from odtf.common import get_file_logger
 from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task
 from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend, FileNameBuilder
 from odtf.archive import RemoteFetcher, LocalArchive
-from odtf.compare import FileComparer, comparer_factory
+from odtf.compare import  comparer_factory
 from odtf.config import Config
 
 from onedep_deposition.deposit_api import DepositApi
@@ -38,6 +38,7 @@ from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
+from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
 
 file_logger = get_file_logger(__name__)
 
@@ -220,7 +221,11 @@ def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
 
 
 def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
-    lfs = LocalFileSystem()
+    pi = PathInfo()
+    ci = ConfigInfoData()
+    content_type_dict = ci.getConfigDictionary()["CONTENT_TYPE_DICTIONARY"]
+    format_dict = ci.getConfigDictionary()["FILE_FORMAT_EXTENSION_DICTIONARY"]
+    fs = FilesystemBackend(pi, content_type_dict, format_dict)
 
     for rname in task.rules:
         if task.source == "copy":
@@ -231,14 +236,15 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
         rule = config.get_compare_rule(rname)
         content_type, format = rule.name.split(".")
 
-        copy_wdo = lfs.locate(dep_id=test_entry.dep_id, repository=ArchiveRepository.DEPOSIT_UI, content=content_type, format=format, version=rule.version)
-        copy_file_path = copy_wdo.getFilePathReference()
+        copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
+        copy_file_path = fs.locate(copy_uri)
 
-        test_entry_wdo = lfs.locate(dep_id=test_entry.dep_id, repository=ArchiveRepository.TEMPDEP, content=content_type, format=format, version=rule.version)
-        test_entry_file_path = test_entry_wdo.getFilePathReference()
-        if not lfs.exists(test_entry_wdo):
-            raise FileNotFoundError(f"Test entry file {test_entry_file_path} not found in local archive.")
+        test_entry_uri = fs.filename_builder.build_filename(dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
+        if not fs.exists(test_entry_uri):
+            raise FileNotFoundError(f"Test entry file {test_entry_uri} not found in local archive.")
+        test_entry_file_path = fs.locate(test_entry_uri)
 
+        status_manager.update_status(test_entry, message=f"Comparing {copy_uri} with {test_entry_uri} using {rule.method}")
         comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
         if not comparer.compare():
             status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
@@ -253,7 +259,7 @@ def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusMan
 
     status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
     try:
-        fetcher.fetch(test_entry.dep_id)
+        fetcher.fetch(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT_UI.value)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
