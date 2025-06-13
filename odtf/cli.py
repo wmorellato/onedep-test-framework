@@ -47,7 +47,7 @@ ci = ConfigInfo()
 pi = PathInfo()
 configApp = ConfigInfoAppBase()
 
-for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests"]:
+for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.CRITICAL)
     logger.propagate = True
@@ -239,7 +239,7 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
         copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
         copy_file_path = fs.locate(copy_uri)
 
-        test_entry_uri = fs.filename_builder.build_filename(dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
+        test_entry_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
         if not fs.exists(test_entry_uri):
             raise FileNotFoundError(f"Test entry file {test_entry_uri} not found in local archive.")
         test_entry_file_path = fs.locate(test_entry_uri)

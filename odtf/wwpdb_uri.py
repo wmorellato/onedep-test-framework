@@ -264,7 +264,7 @@ class FilesystemBackend(StorageBackend):
             return Path(self.path_info.getFilePath(
                 dataSetId=uri.dep_id,
                 contentType=uri.content_type,
-                fileFormat=uri.format,
+                formatType=uri.format,
                 fileSource=uri.repository,
                 versionId=uri.get_version(),
                 partNumber=uri.get_part_number() or 1

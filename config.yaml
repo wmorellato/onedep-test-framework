@@ -36,7 +36,7 @@ test_set:
   D_8233000197:
     tasks:
       - compare_files:
-        source: wwpdb://archive/D_8233000142/
+        source: wwpdb://deposit-ui/D_8233000142/
         rules:
           - model.pdbx
           - model-upload.pdbx 
