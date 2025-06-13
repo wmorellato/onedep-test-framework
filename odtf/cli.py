@@ -22,6 +22,7 @@ from rich.table import Table
 
 from odtf.common import get_file_logger
 from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task
+from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend, FileNameBuilder
 from odtf.archive import RemoteFetcher, LocalArchive
 from odtf.compare import FileComparer, comparer_factory
 from odtf.config import Config
@@ -33,7 +34,7 @@ from onedep_deposition.models import (DepositError, DepositStatus, EMSubType,
 
 from wwpdb.apps.deposit.auth.tokens import create_token
 from wwpdb.apps.deposit.common.utils import parse_filename
-from wwpdb.apps.deposit.main.archive import ArchiveRepository, LocalFileSystem
+from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
@@ -162,7 +163,7 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
     return deposition
 
 
-def upload_files(copy_dep_id: str, test_entry: TestEntry, status_manager: StatusManager):
+def upload_files(test_entry: TestEntry, status_manager: StatusManager):
     # getting all files with the 'upload' milestone from the archive dir
     arch_data = pi.getTempDepPath(dataSetId=test_entry.dep_id)
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
@@ -180,13 +181,13 @@ def upload_files(copy_dep_id: str, test_entry: TestEntry, status_manager: Status
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
             file_path = os.path.join(arch_data, f)
-            file = api.upload_file(copy_dep_id, file_path, filetype, overwrite=False)
+            file = api.upload_file(test_entry.copy_dep_id, file_path, filetype, overwrite=False)
             uploaded_files.append(file)
 
             if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
                 if contour_level:
                     status_manager.update_status(test_entry, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
-                    api.update_metadata(copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
+                    api.update_metadata(test_entry.copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
                 else:
                     raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
         except ValueError as e:
@@ -200,7 +201,7 @@ def upload_files(copy_dep_id: str, test_entry: TestEntry, status_manager: Status
 
 
 def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
-    lfs = LocalFileSystem()
+    fsb = FilesystemBackend()
 
     for f in api.get_files(dep_id).files:
         print("[+] removing file", f.file_id)
@@ -218,14 +219,14 @@ def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
             print("[!] failed to upload %s, %s" % (test_file, e))
 
 
-def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager, source=None):
+def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     lfs = LocalFileSystem()
 
     for rname in task.rules:
         if task.source == "copy":
-            if not source:
+            if not test_entry.copy_dep_id:
                 raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
-            task.source = source
+            task.source = test_entry.copy_dep_id
 
         rule = config.get_compare_rule(rname)
         content_type, format = rule.name.split(".")
@@ -233,7 +234,7 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
         copy_wdo = lfs.locate(dep_id=test_entry.dep_id, repository=ArchiveRepository.DEPOSIT_UI, content=content_type, format=format, version=rule.version)
         copy_file_path = copy_wdo.getFilePathReference()
 
-        test_entry_wdo = lfs.locate(dep_id=task.source, repository=ArchiveRepository.TEMPDEP, content=content_type, format=format, version=rule.version)
+        test_entry_wdo = lfs.locate(dep_id=test_entry.dep_id, repository=ArchiveRepository.TEMPDEP, content=content_type, format=format, version=rule.version)
         test_entry_file_path = test_entry_wdo.getFilePathReference()
         if not lfs.exists(test_entry_wdo):
             raise FileNotFoundError(f"Test entry file {test_entry_file_path} not found in local archive.")
@@ -245,34 +246,37 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
             status_manager.update_status(test_entry, message=f"Files are the same for {content_type}.{format} using {rule.method}")
 
 
-def create_and_process(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusManager):
     remote = config.get_remote_archive()
     local = LocalArchive(site_id=getSiteId())
     fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
 
+    status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
+    try:
+        fetcher.fetch(test_entry.dep_id)
+    except Exception as e:
+        raise Exception("Error fetching files from archive") from e
+
+
+def create_and_process(test_entry: TestEntry, status_manager: StatusManager):
     exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
     exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
 
     status_manager.update_status(test_entry, status="working", message="Creating test deposition")    
     try:
         copy_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+        test_entry.copy_dep_id = copy_dep.dep_id
     except Exception as e:
         raise Exception("Error creating test deposition") from e
 
-    status_manager.update_status(test_entry, copy_dep_id=copy_dep.dep_id, message="Fetching files from archive")
-    try:
-        fetcher.fetch(test_entry.dep_id)
-    except Exception as e:
-        raise Exception("Error fetching files from archive") from e
-
-    upload_files(copy_dep_id=copy_dep.dep_id, test_entry=test_entry, status_manager=status_manager)
+    upload_files(test_entry=test_entry, status_manager=status_manager)
 
     copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-    response = api.process(copy_dep.dep_id, **copy_elements)
+    response = api.process(test_entry.copy_dep_id, **copy_elements)
     status = "started"
 
     while status in ("running", "started", "submit"):
-        response = api.get_status(copy_dep.dep_id)
+        response = api.get_status(test_entry.copy_dep_id)
 
         if isinstance(response, DepositStatus):
             if response.details == status_manager.get_status(test_entry).message:
@@ -377,6 +381,7 @@ def generate_table(status_manager):
 def run_entry_tasks(entry, config, status_manager):
     """Run all tasks for a single entry sequentially."""
     get_entry_info(entry, status_manager)
+    fetch_files(entry, config, status_manager)
 
     for task in entry.tasks:
         if task.type == TaskType.UPLOAD:

@@ -3,14 +3,12 @@ import shutil
 import subprocess
 
 from dataclasses import dataclass
-from typing import Callable, List
-
-from wwpdb.apps.deposit.common.utils import parse_filename
-from wwpdb.apps.deposit.main.archive import ArchiveRepository
+from typing import List, Dict, Any, List, Union
+from pathlib import Path
 
 from wwpdb.io.locator.PathInfo import PathInfo
-from wwpdb.io.locator.DataReference import DataFileReference
 
+from odtf.wwpdb_uri import WwPDBResourceURI, StorageBackend, FileNameBuilder
 from odtf.common import get_file_logger
 
 file_logger = get_file_logger(__name__)
@@ -27,94 +25,6 @@ class RemoteArchive:
 @dataclass
 class LocalArchive:
     site_id: str
-
-
-class FileFinder:
-    """This implementation is not good, but I'm in a hurry to get this done.
-    We need a way of finding any WF file regardless of its location, which is
-    what I tried to do here, but it's clunky and conflicts with the LFS implementation.
-    """
-    def __init__(self, location: str):
-        self._location = location
-        self._content_group = {}
-
-    def find(self, filters: List[Callable[[str], bool]] = None) -> List[str]:
-        """
-        Find files in the archive directory based on the deposition ID and apply filters.
-        
-        :param location: The path to the location where files are stored.
-        :param filters: List of filter functions to apply to the files.
-        :return: List of filtered file paths.
-        """
-        files = []
-        for filename in os.listdir(self._location):
-            if os.path.isfile(os.path.join(self._location, filename)):
-                # the repository doesn't matter here
-                fo = parse_filename(ArchiveRepository.ARCHIVE.value, filename)
-                if not (fo and fo.getFilePathReference()):
-                    continue
-                files.append(fo)
-
-        if filters:
-            for filter_func in filters:
-                # AND operation
-                files = list(filter(filter_func, files))
-
-        return [f._DataFileReference__getInternalFileNameVersioned() for f in files]
-
-    @staticmethod
-    def filter_by_content_type(content_type: str) -> Callable[[str], bool]:
-        """
-        Create a filter function to filter files by content type.
-        """
-        def filter_func(dfr: DataFileReference) -> bool:
-            return dfr.getContentType() == content_type
-        return filter_func
-
-    @staticmethod
-    def filter_by_format(file_format: str) -> Callable[[str], bool]:
-        """
-        Create a filter function to filter files by format.
-        """
-        def filter_func(dfr: DataFileReference) -> bool:
-            return dfr.getFileFormat() == file_format
-        return filter_func
-
-    @staticmethod
-    def filter_by_partition(partition: str) -> Callable[[str], bool]:
-        """
-        Create a filter function to filter files by partition number.
-        """
-        def filter_func(dfr: DataFileReference) -> bool:
-            return dfr.getPartitionNumber() == partition
-        return filter_func
-
-    @staticmethod
-    def filter_by_version(version: str) -> Callable[[str], bool]:
-        """
-        Create a filter function to filter files by version.
-        
-        WARNING: This only accepts numbers (in str), not the string identifiers
-        (latest, next, etc.). If you want the first, latest etc, remove
-        this filter and sort the results after filtering.
-        """
-        def filter_func(dfr: DataFileReference) -> bool:
-            return dfr.getVersionId() == version
-        return filter_func
-
-    @staticmethod
-    def filter_by_filename_contains(substring: str) -> Callable[[str], bool]:
-        """
-        Create a filter function to filter files by substring in filename.
-        """
-        def filter_func(dfr: DataFileReference) -> bool:
-            filepath = dfr.getFilePathReference()
-
-            if not filepath:
-                return False
-
-            return substring in os.path.basename(dfr.getFilePathReference())
-        return filter_func
 
 
 class RemoteFetcher:

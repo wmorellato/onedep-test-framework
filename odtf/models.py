@@ -104,6 +104,7 @@ class CompareFilesTask(Task):
 @dataclass
 class TestEntry:
     dep_id: str
+    copy_dep_id: str = field(default=None)
     tasks: List[Task] = field(default_factory=list)
 
     def has_task(self, task_type: TaskType) -> bool:
