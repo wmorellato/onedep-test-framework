@@ -22,10 +22,11 @@ from rich.table import Table
 
 from odtf.common import get_file_logger
 from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task
-from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend, FileNameBuilder
+from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend
 from odtf.archive import RemoteFetcher, LocalArchive
 from odtf.compare import  comparer_factory
 from odtf.config import Config
+from odtf.report import ReportGenerator, TestReport
 
 from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
@@ -68,6 +69,7 @@ prod_db = {
 }
 
 api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
+generator = ReportGenerator(template_dir="templates")
 
 
 def parse_voxel_values(filepath):
