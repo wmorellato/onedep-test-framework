@@ -11,7 +11,9 @@ import logging
 import threading
 import time
 from typing import List
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import click
 import MySQLdb
@@ -21,22 +23,21 @@ from rich.spinner import Spinner
 from rich.table import Table
 
 from odtf.common import get_file_logger
-from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task
+from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task, UploadTask, CompareFilesTask, TaskStatus
 from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend
 from odtf.archive import RemoteFetcher, LocalArchive
 from odtf.compare import  comparer_factory
 from odtf.config import Config
-from odtf.report import ReportGenerator, TestReport
+from odtf.report import TestReportGenerator, TestReportIntegration
 
 from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
 from onedep_deposition.models import (DepositError, DepositStatus, EMSubType,
                                       ExperimentType)
 
-from wwpdb.apps.deposit.auth.tokens import create_token
-from wwpdb.apps.deposit.common.utils import parse_filename
-from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.io.locator.PathInfo import PathInfo
+from wwpdb.apps.deposit.auth.tokens import create_token
+from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
 from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
@@ -44,11 +45,14 @@ from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
 file_logger = get_file_logger(__name__)
 
 
-ci = ConfigInfo()
 pi = PathInfo()
+ci = ConfigInfo()
+cid = ConfigInfoData()
 configApp = ConfigInfoAppBase()
+content_type_dict = cid.getConfigDictionary()["CONTENT_TYPE_DICTIONARY"]
+format_dict = cid.getConfigDictionary()["FILE_FORMAT_EXTENSION_DICTIONARY"]
 
-for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo"]:
+for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo", "odtf.report"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.CRITICAL)
     logger.propagate = True
@@ -69,7 +73,6 @@ prod_db = {
 }
 
 api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
-generator = ReportGenerator(template_dir="templates")
 
 
 def parse_voxel_values(filepath):
@@ -106,10 +109,11 @@ class StatusManager:
     """
     Minimal thread-safety with your exact logic preserved.
     """
-    def __init__(self, test_set: List[TestEntry], callback):
+    def __init__(self, test_set: List[TestEntry], callback, report_integration=None):
         self.statuses = {te.dep_id: EntryStatus(arch_dep_id=te.dep_id) for te in test_set}
         self.callback = callback
         self._lock = threading.RLock()
+        self.report_integration = report_integration
 
     def update_status(self, test_entry: TestEntry, **kwargs):
         with self._lock:
@@ -136,6 +140,26 @@ class StatusManager:
     def __iter__(self):
         with self._lock:
             return iter(list(self.statuses.values()))
+
+    def track_task_result(self, test_entry: TestEntry, task_type: TaskType, success: bool, error_message: str = None):
+        """Track individual task results for report generation"""
+        if not self.report_integration:
+            return
+            
+        # Find the task in the test entry and update its status
+        for task in test_entry.tasks:
+            if task.type == task_type:
+                task.status = TaskStatus.SUCCESS if success else TaskStatus.FAILED
+                task.error_message = error_message
+                task.execution_time = datetime.now()
+                break
+    
+    def track_comparison_result(self, test_entry: TestEntry, rule_name: str, success: bool, error_message: str = None):
+        """Track comparison rule results"""
+        if self.report_integration:
+            self.report_integration.track_comparison_result(
+                test_entry.dep_id, rule_name, success, error_message
+            )
 
 
 def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
@@ -166,25 +190,26 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
     return deposition
 
 
-def upload_files(test_entry: TestEntry, status_manager: StatusManager):
-    # getting all files with the 'upload' milestone from the archive dir
-    arch_data = pi.getTempDepPath(dataSetId=test_entry.dep_id)
+def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager):
+    # getting all files with the 'upload' milestone doesn't work as I've seen
+    # some depositions with multiple versions of -upload type
+    arch_data_path = pi.getTempDepPath(dataSetId=test_entry.dep_id)
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
-    previous_files = [f for f in os.listdir(arch_data) if "upload_P" in f]
     uploaded_files = []
     contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
+    fs = FilesystemBackend(pi, content_type_config=content_type_dict, format_extension_d=format_dict)
 
-    for f in previous_files:
-        fobj = parse_filename(repository=ArchiveRepository.ARCHIVE.value, filename=f)
-        content_type = fobj.getContentType()
-        file_format = fobj.getFileFormat()
+    for f in task.files:
+        content_type, file_format = f.split(".")
+        content_type = f"{content_type}-upload"
+        file_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=file_format, version="latest")
 
         status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}`")
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
-            file_path = os.path.join(arch_data, f)
-            file = api.upload_file(test_entry.copy_dep_id, file_path, filetype, overwrite=False)
+            filepath = fs.locate(file_uri)
+            file = api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
             uploaded_files.append(file)
 
             if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
@@ -203,39 +228,17 @@ def upload_files(test_entry: TestEntry, status_manager: StatusManager):
     return uploaded_files
 
 
-def reupload_files(dep_id: str, base_dep_id: str, base_files_location: str):
-    fsb = FilesystemBackend()
-
-    for f in api.get_files(dep_id).files:
-        print("[+] removing file", f.file_id)
-        api.remove_file(dep_id, f.file_id)
-
-    for f in input_files:
-        wdo = lfs.locate(dep_id=base_dep_id, repository=ArchiveRepository.TEMPDEP, content=f[1], format=f[2], version="latest")
-        basename = os.path.basename(wdo.getFilePathReference())
-        test_file = os.path.join(base_files_location, basename)
-        filetype = f[0]
-
-        try:
-            file = api.upload_file(dep_id, test_file, filetype, overwrite=True)
-        except Exception as e:
-            print("[!] failed to upload %s, %s" % (test_file, e))
-
-
 def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
-    pi = PathInfo()
-    ci = ConfigInfoData()
-    content_type_dict = ci.getConfigDictionary()["CONTENT_TYPE_DICTIONARY"]
-    format_dict = ci.getConfigDictionary()["FILE_FORMAT_EXTENSION_DICTIONARY"]
     fs = FilesystemBackend(pi, content_type_dict, format_dict)
+    overall_success = True
 
-    for rname in task.rules:
+    for cr in task.rules:
         if task.source == "copy":
             if not test_entry.copy_dep_id:
                 raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
-            task.source = test_entry.copy_dep_id
+            task.source = f"wwpdb://deposit-ui/{test_entry.copy_dep_id}/"
 
-        rule = config.get_compare_rule(rname)
+        rule = config.get_compare_rule(cr.name)
         content_type, format = rule.name.split(".")
 
         copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
@@ -243,15 +246,34 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
 
         test_entry_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
         if not fs.exists(test_entry_uri):
-            raise FileNotFoundError(f"Test entry file {test_entry_uri} not found in local archive.")
+            error_msg = f"Test entry file {test_entry_uri} not found in local archive."
+            status_manager.track_comparison_result(test_entry, rule.name, False, error_msg)
+            raise FileNotFoundError(error_msg)
+        
         test_entry_file_path = fs.locate(test_entry_uri)
 
         status_manager.update_status(test_entry, message=f"Comparing {copy_uri} with {test_entry_uri} using {rule.method}")
-        comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
-        if not comparer.compare():
-            status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
-        else:
-            status_manager.update_status(test_entry, message=f"Files are the same for {content_type}.{format} using {rule.method}")
+        
+        try:
+            comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
+            success = comparer.compare()
+            
+            # Track the individual rule result
+            error_msg = None if success else f"Comparison failed for {content_type}.{format} using {rule.method}"
+            status_manager.track_comparison_result(test_entry, rule.name, success, error_msg)
+            
+            if not success:
+                overall_success = False
+                status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
+            else:
+                status_manager.update_status(test_entry, message=f"Files are the same for {content_type}.{format} using {rule.method}")
+        
+        except Exception as e:
+            overall_success = False
+            error_msg = f"Error during comparison: {str(e)}"
+            status_manager.track_comparison_result(test_entry, rule.name, False, error_msg)
+
+    status_manager.track_task_result(test_entry, TaskType.COMPARE_FILES, overall_success)
 
 
 def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusManager):
@@ -261,46 +283,53 @@ def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusMan
 
     status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
     try:
-        fetcher.fetch(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT_UI.value)
+        fetcher.fetch(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT.value)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
 
-def create_and_process(test_entry: TestEntry, status_manager: StatusManager):
-    exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
-    exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
-
-    status_manager.update_status(test_entry, status="working", message="Creating test deposition")    
+def create_and_process(test_entry: TestEntry, task: Task, status_manager: StatusManager):
     try:
-        copy_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
-        test_entry.copy_dep_id = copy_dep.dep_id
+        exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
+        exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
+
+        status_manager.update_status(test_entry, status="working", message="Creating test deposition")
+        try:
+            copy_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+            test_entry.copy_dep_id = copy_dep.dep_id
+        except Exception as e:
+            raise Exception("Error creating test deposition") from e
+
+        status_manager.update_status(test_entry, copy_dep_id=copy_dep.dep_id)
+        upload_files(test_entry=test_entry, task=task, status_manager=status_manager)
+
+        copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
+        response = api.process(test_entry.copy_dep_id, **copy_elements)
+        status = "started"
+
+        while status in ("running", "started", "submit"):
+            response = api.get_status(test_entry.copy_dep_id)
+
+            if isinstance(response, DepositStatus):
+                if response.details == status_manager.get_status(test_entry).message:
+                    continue
+
+                status_manager.update_status(test_entry, status="working", message=f"{response.details}")
+                status = response.status
+
+                if status == "error":
+                    raise Exception(response.details)
+            elif isinstance(response, DepositError):
+                raise Exception(response.message)
+            else:
+                raise Exception(f"Unknown response type {type(response)}")
+
+            time.sleep(5)
+        
+        status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
-        raise Exception("Error creating test deposition") from e
-
-    upload_files(test_entry=test_entry, status_manager=status_manager)
-
-    copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-    response = api.process(test_entry.copy_dep_id, **copy_elements)
-    status = "started"
-
-    while status in ("running", "started", "submit"):
-        response = api.get_status(test_entry.copy_dep_id)
-
-        if isinstance(response, DepositStatus):
-            if response.details == status_manager.get_status(test_entry).message:
-                continue
-
-            status_manager.update_status(test_entry, status="working", message=f"{response.details}")
-            status = response.status
-
-            if status == "error":
-                raise Exception(response.details)
-        elif isinstance(response, DepositError):
-            raise Exception(response.message)
-        else:
-            raise Exception(f"Unknown response type {type(response)}")
-
-        time.sleep(5)
+        status_manager.track_task_result(test_entry, TaskType.UPLOAD, False, str(e))
+        raise
 
 
 def get_entry_info(test_entry: TestEntry, status_manager: StatusManager):
@@ -392,23 +421,47 @@ def run_entry_tasks(entry, config, status_manager):
     fetch_files(entry, config, status_manager)
 
     for task in entry.tasks:
-        if task.type == TaskType.UPLOAD:
-            create_and_process(entry, config, status_manager)
-        elif task.type == TaskType.COMPARE_FILES:
-            compare_files(entry, task, config, status_manager)
-        else:
-            file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
-    
+        try:
+            if task.type == TaskType.UPLOAD:
+                create_and_process(entry, task, status_manager)
+            elif task.type == TaskType.COMPARE_FILES:
+                compare_files(entry, task, config, status_manager)
+            else:
+                file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
+        except Exception as e:
+            task.status = TaskStatus.FAILED
+            task.error_message = str(e)
+            task.execution_time = datetime.now()
+            if task.stop_on_failure:
+                status_manager.update_status(entry, status="failed", message=f"Task {task.type} failed: {e}")
+                return
+
     status_manager.update_status(entry, status="finished", message=f"Completed all tasks for entry {entry.dep_id}")
+
+
+def setup_report_generation(output_dir: str = "reports"):
+    """Setup report generation components"""
+    Path(output_dir).mkdir(exist_ok=True)
+    template_dir = Path(__file__).parent / "templates"
+    template_path = template_dir / "test_report.html"
+    if not template_path.exists():
+        # You would copy the HTML template content here
+        # For now, we'll assume it exists
+        file_logger.warning(f"Template file not found: {template_path}")
+    
+    # Initialize report generator
+    generator = TestReportGenerator(template_dir=template_dir, output_dir=output_dir)
+    integration = TestReportIntegration(generator)
+    
+    return generator, integration
 
 
 @click.command()
 @click.argument('test_config', type=click.Path(exists=True, dir_okay=False, readable=True), required=True)
-# @click.option('--config-file', default=None, help='Path to the configuration file. Defaults to ~/.odtf/config.yaml.')
 @click.option('--force-fetch', is_flag=True, help="Force fetch from remote archive")
-@click.option('--keep-temp', is_flag=True, help='Keep temporary files')
-@click.option('--cache-location', default="/wwpdb/onedep/testcache", help='Cache location')
-def main(test_config, force_fetch, keep_temp, cache_location):
+@click.option('--generate-report', is_flag=True, help='Generate HTML test report', default=True)
+@click.option('--report-dir', default="reports", help='Directory for generated reports')
+def main(test_config, force_fetch, generate_report, report_dir):
     """TEST_CONFIG is the path to the test configuration file.
     """
     if "pro" in getSiteId().lower(): # get the production ids from config
@@ -418,12 +471,23 @@ def main(test_config, force_fetch, keep_temp, cache_location):
     config = Config(test_config)
     test_set = config.get_test_set()
 
+    report_integration = None
+    if generate_report:
+        try:
+            _, report_integration = setup_report_generation(
+                output_dir="/wwpdb/onedep/deployments/dev/source/onedep-webfe/webapps/htdocs/"
+            )
+            click.echo(f"Report generation enabled. Reports will be saved to: {report_dir}")
+        except Exception as e:
+            click.echo(f"Warning: Could not setup report generation: {e}", err=True)
+            generate_report = False
+
     with Live(refresh_per_second=15) as live:
         def update_callback():
             """Callback to update the live display"""
             live.update(generate_table(status_manager))
 
-        status_manager = StatusManager(test_set, callback=update_callback)
+        status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
         live.update(generate_table(status_manager))
 
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -434,8 +498,21 @@ def main(test_config, force_fetch, keep_temp, cache_location):
                 try:
                     future.result()
                 except Exception as e:
-                    file_logger.error("Error processing entry %s: %s", dep_id, e)
+                    file_logger.error("Error processing entry %s: %s", dep_id, e, exc_info=True)
                     status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
+
+    if generate_report and report_integration:
+        try:
+            click.echo("Generating test report...")
+            report_path = report_integration.generate_final_report(
+                test_set, 
+                status_manager,
+                output_filename=f"report.html"
+            )
+            click.echo(f"Test report generated: {report_path}")
+        except Exception as e:
+            click.echo(f"Failed to generate test report: {e}", err=True)
+            file_logger.error(f"Report generation failed: {e}")
 
 
 if __name__ == '__main__':

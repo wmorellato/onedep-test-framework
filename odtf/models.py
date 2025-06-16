@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional
+from datetime import datetime
 
 from onedep_deposition.enum import FileType
 from onedep_deposition.models import (EMSubType, ExperimentType)
@@ -65,15 +66,29 @@ class TaskType(Enum):
     COMPARE_FILES = "compare_files"
 
 
+class TaskStatus(Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    WARNING = "warning"
+
+
 @dataclass
 class Task:
     type: TaskType
+    status: TaskStatus = TaskStatus.PENDING
+    stop_on_failure: bool = False
+    error_message: Optional[str] = None
+    execution_time: Optional[datetime] = None
 
 
 @dataclass
 class UploadTask(Task):
-    def __init__(self):
-        super().__init__(type=TaskType.UPLOAD)
+    files: List[str] = None
+
+    def __init__(self, files: List[str]):
+        super().__init__(type=TaskType.UPLOAD, stop_on_failure=True)
+        self.files = files
 
 
 @dataclass
@@ -87,6 +102,8 @@ class CompareRule:
     name: str
     method: str
     version: str
+    status: TaskStatus = TaskStatus.PENDING
+    error_message: Optional[str] = None
     categories: List[str] = field(default_factory=list)
 
 
@@ -98,7 +115,7 @@ class CompareFilesTask(Task):
     def __init__(self, source: Optional[str], rules: List[str]):
         super().__init__(type=TaskType.COMPARE_FILES)
         self.source = source
-        self.rules = rules
+        self.rules = [CompareRule(name=rule, method="", version="") for rule in rules]
 
 
 @dataclass
@@ -106,6 +123,7 @@ class TestEntry:
     dep_id: str
     copy_dep_id: str = field(default=None)
     tasks: List[Task] = field(default_factory=list)
+    log_file: Optional[str] = None
 
     def has_task(self, task_type: TaskType) -> bool:
         return any(task.type == task_type for task in self.tasks)
@@ -127,3 +145,31 @@ class EntryStatus:
     def __str__(self):
         exp_type = self.exp_type.value if self.exp_type else "?"
         return f"{self.arch_dep_id} ({self.arch_entry_id}) → {self.copy_dep_id} {exp_type}: {self.message}"
+
+
+@dataclass
+class TestReport:
+    """Model for the complete test report"""
+    test_entries: List[TestEntry]
+    generation_time: datetime = field(default_factory=datetime.now)
+    title: str = "ODTF Test Report"
+    summary: Dict[str, int] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Calculate summary statistics"""
+        self.summary = {
+            'total_entries': len(self.test_entries),
+            'total_tasks': sum(len(entry.tasks) for entry in self.test_entries),
+            'successful_tasks': 0,
+            'failed_tasks': 0,
+            'pending_tasks': 0
+        }
+        
+        for entry in self.test_entries:
+            for task in entry.tasks:
+                if task.status == TaskStatus.SUCCESS:
+                    self.summary['successful_tasks'] += 1
+                elif task.status == TaskStatus.FAILED:
+                    self.summary['failed_tasks'] += 1
+                else:
+                    self.summary['pending_tasks'] += 1

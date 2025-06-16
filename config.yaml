@@ -1,6 +1,6 @@
 remote_archive:
   host: localhost
-  user: oendep
+  user: onedep
   site_id: PDBE_DEV
 
 compare_rules:
@@ -18,21 +18,56 @@ compare_rules:
   mapfix-header-report.json:
     method: jsondiff
     version: latest
+  structure-factors.pdbx:
+    method: cifdiff
+    version: latest
+  chem-comp-assign.pdbx:
+    method: cifdiff
+    version: latest
+  assembly-model.pdbx:
+    method: cifdiff
+    version: latest
 
 test_set:
-  # D_8233000142:
-  #   tasks:
-  #     - upload
-  #     - compare_files:
-  #       source: copy
-  #       rules:
-  #         - model.pdbx
-  #         - model-upload.pdbx
-  #         - model-upload-convert.pdbx
-  #         - mapfix-header-report.json
-  #     - submit
-  #     - compare_files:
-  #       - model.pdbx
+  D_8233000142:
+    tasks:
+      - upload:
+        files:
+          - model.pdbx
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
+          - model-upload.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
+  D_8233000141:
+    tasks:
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - chem-comp-assign.pdbx
+          - assembly-model.pdbx
+      - submit
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
   D_8233000197:
     tasks:
       - compare_files:

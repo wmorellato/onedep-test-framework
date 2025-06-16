@@ -7,15 +7,17 @@ from odtf.models import CompareRule, TestEntry, TaskType, Task, UploadTask, Subm
 
 def parse_task(task_data: Union[str, Dict]) -> Task:
     if isinstance(task_data, str):
-        if task_data == "upload":
-            return UploadTask()
-        elif task_data == "submit":
+        if task_data == "submit":
             return SubmitTask()
     elif isinstance(task_data, dict):
         if "compare_files" in task_data:
             return CompareFilesTask(
                 source=task_data.get("source"),
                 rules=task_data.get("rules", [])
+            )
+        elif "upload" in task_data:
+            return UploadTask(
+                files=task_data.get("files")
             )
     raise ValueError(f"Unknown task type: {task_data}")
 

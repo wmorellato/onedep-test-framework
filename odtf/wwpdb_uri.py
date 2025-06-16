@@ -9,9 +9,6 @@ import re
 from wwpdb.io.locator.PathInfo import PathInfo
 
 
-# TODO: Implement RemoteBackend
-
-
 class WwPDBResourceURI:
     """
     wwPDB Resource URI that supports both directory and file identification

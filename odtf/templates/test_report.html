@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ report.title }}</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.1/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .report-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .summary-card {
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        .summary-card:hover {
+            transform: translateY(-2px);
+        }
+        .accordion-item {
+            border: none;
+            margin-bottom: 1rem;
+            border-radius: 0.5rem !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .accordion-header .accordion-button {
+            background-color: #fff;
+            border: none;
+            padding: 1.25rem;
+            font-weight: 600;
+        }
+        .accordion-header .accordion-button:not(.collapsed) {
+            background-color: #e7f3ff;
+            color: #0066cc;
+        }
+        .task-item {
+            background-color: #f8f9fa;
+            border-radius: 0.375rem;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-left: 4px solid #dee2e6;
+        }
+        .task-item.success {
+            border-left-color: #28a745;
+            background-color: #f8fff9;
+        }
+        .task-item.failed {
+            border-left-color: #dc3545;
+            background-color: #fff8f8;
+        }
+        .task-item.warning {
+            border-left-color: #ffc107;
+            background-color: #fffdf7;
+        }
+        .rule-item {
+            background-color: #ffffff;
+            border: 1px solid #e9ecef;
+            border-radius: 0.25rem;
+            padding: 0.5rem 0.75rem;
+            margin: 0.25rem 0;
+            margin-left: 1.5rem;
+        }
+        .rule-item.success {
+            border-color: #28a745;
+            background-color: #f8fff9;
+        }
+        .rule-item.failed {
+            border-color: #dc3545;
+            background-color: #fff8f8;
+        }
+        .rule-item.warning {
+            border-color: #ffc107;
+            background-color: #fffdf7;
+        }
+        .dep-id-header {
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+        }
+        .log-link {
+            font-size: 0.875rem;
+        }
+        .task-type-badge {
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .error-message {
+            font-size: 0.875rem;
+            color: #6c757d;
+            margin-top: 0.25rem;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="report-header">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1 class="mb-2">{{ report.title }}</h1>
+                    <p class="mb-0 opacity-75">Generated on {{ report.generation_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                </div>
+                <div class="col-md-4 text-md-end">
+                    <div class="d-flex justify-content-md-end gap-3">
+                        <div class="text-center">
+                            <div class="h4 mb-0">{{ report.summary.total_entries }}</div>
+                            <small>Entries</small>
+                        </div>
+                        <div class="text-center">
+                            <div class="h4 mb-0">{{ report.summary.total_tasks }}</div>
+                            <small>Tasks</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Summary Cards -->
+        <div class="row mb-4">
+            <div class="col-md-3 mb-3">
+                <div class="card summary-card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-check-circle-fill text-success fs-2"></i>
+                        <h4 class="mt-2 text-success">{{ report.summary.successful_tasks }}</h4>
+                        <p class="text-muted mb-0">Successful Tasks</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="card summary-card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-x-circle-fill text-danger fs-2"></i>
+                        <h4 class="mt-2 text-danger">{{ report.summary.failed_tasks }}</h4>
+                        <p class="text-muted mb-0">Failed Tasks</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="card summary-card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-clock-fill text-warning fs-2"></i>
+                        <h4 class="mt-2 text-warning">{{ report.summary.pending_tasks }}</h4>
+                        <p class="text-muted mb-0">Pending Tasks</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 mb-3">
+                <div class="card summary-card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-list-check fs-2 text-info"></i>
+                        <h4 class="mt-2 text-info">{{ report.summary.total_entries }}</h4>
+                        <p class="text-muted mb-0">Total Entries</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test Entries Accordion -->
+        <div class="accordion" id="testEntriesAccordion">
+            {% for entry in report.test_entries %}
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="heading{{ loop.index }}">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                            data-bs-target="#collapse{{ loop.index }}" aria-expanded="false" 
+                            aria-controls="collapse{{ loop.index }}">
+                        <div class="w-100">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="dep-id-header">{{ entry.dep_id }}</span>
+                                <div class="d-flex gap-2">
+                                    {% set successful_tasks = entry.tasks | selectattr('status.value', 'equalto', 'success') | list | length %}
+                                    {% set failed_tasks = entry.tasks | selectattr('status.value', 'equalto', 'failed') | list | length %}
+                                    {% set total_tasks = entry.tasks | length %}
+                                    
+                                    {% if failed_tasks > 0 %}
+                                        <span class="badge bg-danger">{{ failed_tasks }} failed</span>
+                                    {% endif %}
+                                    {% if successful_tasks > 0 %}
+                                        <span class="badge bg-success">{{ successful_tasks }} passed</span>
+                                    {% endif %}
+                                    <span class="badge bg-secondary">{{ total_tasks }} total</span>
+                                </div>
+                            </div>
+                        </div>
+                    </button>
+                </h2>
+                <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" 
+                     aria-labelledby="heading{{ loop.index }}" data-bs-parent="#testEntriesAccordion">
+                    <div class="accordion-body">
+                        <!-- Log File Link -->
+                        {% if entry.log_file %}
+                        <div class="mb-3">
+                            <a href="{{ entry.log_file }}" class="btn btn-outline-primary btn-sm log-link" target="_blank">
+                                <i class="bi bi-file-text"></i> View Log File
+                            </a>
+                        </div>
+                        {% endif %}
+
+                        <!-- Copy Deposition ID -->
+                        {% if entry.copy_dep_id %}
+                        <div class="mb-3">
+                            <small class="text-muted">Copy Deposition ID: <code>{{ entry.copy_dep_id }}</code></small>
+                        </div>
+                        {% endif %}
+
+                        <!-- Tasks -->
+                        <div class="tasks-section">
+                            <h6 class="mb-3">Tasks ({{ entry.tasks | length }})</h6>
+                            {% for task in entry.tasks %}
+                            <div class="task-item {{ task.status.value }}">
+                                <div class="d-flex align-items-start">
+                                    {% if task.status.value == 'success' %}
+                                        <i class="bi bi-check-circle-fill text-success me-2 mt-1"></i>
+                                    {% elif task.status.value == 'failed' %}
+                                        <i class="bi bi-x-circle-fill text-danger me-2 mt-1"></i>
+                                    {% elif task.status.value == 'warning' %}
+                                        <i class="bi bi-exclamation-triangle-fill text-warning me-2 mt-1"></i>
+                                    {% else %}
+                                        <i class="bi bi-clock text-muted me-2 mt-1"></i>
+                                    {% endif %}
+                                    
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span class="fw-semibold">{{ task.type.value.replace('_', ' ').title() }}</span>
+                                            <span class="badge task-type-badge bg-light text-dark">{{ task.type.value }}</span>
+                                        </div>
+                                        
+                                        {% if task.error_message %}
+                                        <div class="error-message">{{ task.error_message }}</div>
+                                        {% endif %}
+
+                                        {% if task.execution_time %}
+                                        <small class="text-muted">Executed: {{ task.execution_time.strftime('%H:%M:%S') }}</small>
+                                        {% endif %}
+
+                                        <!-- Compare Files Rules -->
+                                        {% if task.type.value == 'compare_files' and task.rules %}
+                                        <div class="mt-2">
+                                            <small class="text-muted d-block mb-1">Rules:</small>
+                                            {% for rule in task.rules %}
+                                            <div class="rule-item {{ rule.status.value }}">
+                                                <div class="d-flex align-items-center">
+                                                    {% if rule.status.value == 'success' %}
+                                                        <i class="bi bi-check-circle-fill text-success me-2"></i>
+                                                    {% elif rule.status.value == 'failed' %}
+                                                        <i class="bi bi-x-circle-fill text-danger me-2"></i>
+                                                    {% elif rule.status.value == 'warning' %}
+                                                        <i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+                                                    {% else %}
+                                                        <i class="bi bi-clock text-muted me-2"></i>
+                                                    {% endif %}
+                                                    
+                                                    <div class="flex-grow-1">
+                                                        <span class="fw-medium">{{ rule.name }}</span>
+                                                        {% if rule.method %}
+                                                        <small class="text-muted ms-2">({{ rule.method }})</small>
+                                                        {% endif %}
+                                                        {% if rule.error_message %}
+                                                        <div class="error-message">{{ rule.error_message }}</div>
+                                                        {% endif %}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <footer class="mt-5 py-4 bg-light text-center text-muted">
+        <div class="container">
+            <p class="mb-0">ODTF Test Report - Generated {{ report.generation_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        </div>
+    </footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
