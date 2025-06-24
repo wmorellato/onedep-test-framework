@@ -27,7 +27,7 @@ sf_file = "/wwpdb/onedep/deployments/dev/source/py-wwpdb_apps_deposit/2gc2-sf.ci
 
 # deposition = api.create_xray_deposition(email, users, country, password)
 # dep_id = deposition.dep_id
-dep_id = "D_8233000178"
+dep_id = "D_8233000236"
 
 # response = api.upload_file(dep_id, model_file, FileType.MMCIF_COORD, overwrite=False)
 # print(response)
@@ -37,8 +37,8 @@ dep_id = "D_8233000178"
 # print(api.get_status(dep_id))
 
 # copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-# response = api.process(dep_id)
-# print(response)
+response = api.process(dep_id)
+print(response)
 
 status = ""
 while status not in ("finished", "exception", "failed"):

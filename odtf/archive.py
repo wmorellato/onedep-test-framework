@@ -8,23 +8,12 @@ from pathlib import Path
 
 from wwpdb.io.locator.PathInfo import PathInfo
 
-from odtf.wwpdb_uri import WwPDBResourceURI, StorageBackend, FileNameBuilder
+from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend, FileNameBuilder
+from odtf.models import RemoteArchive, LocalArchive
 from odtf.common import get_file_logger
+from odtf.config import Config
 
 file_logger = get_file_logger(__name__)
-
-
-@dataclass
-class RemoteArchive:
-    host: str
-    user: str
-    site_id: str
-    key_file: str = None
-
-
-@dataclass
-class LocalArchive:
-    site_id: str
 
 
 class RemoteFetcher:
@@ -38,7 +27,28 @@ class RemoteFetcher:
         self.cache_size = cache_size
         self.force = force
 
-    def fetch(self, dep_id, repository="deposit"):
+    def fetch_file(self, file_uri: WwPDBResourceURI):
+        """ Fetches a file from the remote archive and stores it in the local tempdep directory."""
+        filesystem = FilesystemBackend(self.remote_pi, Config.CONTENT_TYPE_DICT, Config.FORMAT_DICT)
+        filepath = str(filesystem.locate(file_uri))
+
+        if not filepath:
+            file_logger.error("File %s not found in remote archive", file_uri)
+            return None
+
+        local_path = self.local_pi.getTempDepPath(dataSetId=file_uri.dep_id)
+
+        if self.remote_archive.host == "localhost":
+            # Copy the file locally
+            file_logger.debug("Copying locally from %s to %s", filepath, local_path)
+            os.makedirs(local_path, exist_ok=True)
+            shutil.copy(filepath, local_path)
+            return
+
+        rsync_command = self._build_rsync_command(filepath, local_path)
+        subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def fetch_repository(self, dep_id, repository="deposit"):
         """ Fetches a deposition from the remote archive and stores it in the local
         tempdep directory.
 
@@ -52,7 +62,7 @@ class RemoteFetcher:
         # self._evict_oldest_entry()
 
         file_logger.info("Entry %s not found locally. Downloading from remote host %s", dep_id, self.remote_archive.host)
-        self._fetch_from_remote(dep_id, repository)
+        self._fetch_data_and_pickles(dep_id, repository)
 
     def _local_exists(self, dep_id):
         return os.path.exists(self.local_pi.getTempDepPath(dataSetId=dep_id))
@@ -68,8 +78,20 @@ class RemoteFetcher:
         if len(deposition_folders) >= self.cache_size:
             oldest_folder = min(deposition_folders, key=os.path.getctime)
             shutil.rmtree(os.path.join(self.cache_location, oldest_folder))
+    
+    def _build_rsync_command(self, remote_path, local_path):
+        rsync_command = ["rsync", "-arvzL", "--ignore-existing"]
 
-    def _fetch_from_remote(self, dep_id, repository):
+        if self.remote_archive.key_file:
+            rsync_command.append("-e")
+            rsync_command.append(f"ssh -i {self.remote_archive.key_file}")
+
+        rsync_command.append(f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_path}/")
+        rsync_command.append(local_path)
+
+        return rsync_command
+
+    def _fetch_data_and_pickles(self, dep_id, repository):
         remote_data_path = self.remote_pi.getDirPath(dataSetId=dep_id, fileSource=repository)
         remote_pickles_path = self.remote_pi.getDirPath(dataSetId=dep_id, fileSource="pickles")
         local_data_path = self.local_pi.getTempDepPath(dataSetId=dep_id)
@@ -94,22 +116,10 @@ class RemoteFetcher:
             shutil.copytree(remote_pickles_path, local_pickles_path, dirs_exist_ok=True)
             return
 
-        rsync_command = ["rsync", "-arvzL"]
-
-        if self.remote_archive.key_file:
-            rsync_command.append("-e")
-            rsync_command.append(f"ssh -i {self.remote_archive.key_file}")
-
-        rsync_command.append(f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_data_path}/")
-        rsync_command.append(local_data_path)
-
+        rsync_command = self._build_rsync_command(remote_data_path, local_data_path)
         file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        rsync_command.pop()  # Remove the last argument (local_data_path)
-        rsync_command.pop()  # Remove the remote_data_path argument
-        rsync_command.append(f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_pickles_path}/")
-        rsync_command.append(local_pickles_path)
-
+        rsync_command = self._build_rsync_command(remote_pickles_path, local_pickles_path)
         file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

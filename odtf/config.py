@@ -1,8 +1,11 @@
 import yaml
 from typing import List, Dict, Union
 
-from odtf.archive import RemoteArchive
-from odtf.models import CompareRule, TestEntry, TaskType, Task, UploadTask, SubmitTask, CompareFilesTask
+from odtf.models import RemoteArchive, CompareRule, TestEntry, Task, UploadTask, SubmitTask, CompareFilesTask
+
+from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
+
+cid = ConfigInfoData()
 
 
 def parse_task(task_data: Union[str, Dict]) -> Task:
@@ -23,17 +26,22 @@ def parse_task(task_data: Union[str, Dict]) -> Task:
 
 
 class Config:
+    CONTENT_TYPE_DICT = cid.getConfigDictionary()["CONTENT_TYPE_DICTIONARY"]
+    FORMAT_DICT = cid.getConfigDictionary()["FILE_FORMAT_EXTENSION_DICTIONARY"]
+
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.remote_archive: RemoteArchive = None
         self.compare_rules: Dict[str, CompareRule] = {}
         self.test_set: Dict[str, TestEntry] = {}
+        self.api = {}
         self._parse()
 
     def _parse(self):
         with open(self.file_path, 'r') as f:
             data = yaml.safe_load(f)
 
+        self.api = data.get("api", {})
         self.remote_archive = RemoteArchive(**data["remote_archive"])
 
         for rule_name, rule_data in data["compare_rules"].items():

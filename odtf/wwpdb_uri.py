@@ -263,7 +263,7 @@ class FilesystemBackend(StorageBackend):
                 contentType=uri.content_type,
                 formatType=uri.format,
                 fileSource=uri.repository,
-                versionId=uri.get_version(),
+                versionId=uri.get_version() or "latest",
                 partNumber=uri.get_part_number() or 1
             ))
         else:

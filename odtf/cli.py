@@ -7,9 +7,11 @@ django.setup()
 
 import pickle
 import concurrent.futures
+import requests
 import logging
 import threading
 import time
+import shutil
 from typing import List
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -40,17 +42,14 @@ from wwpdb.apps.deposit.auth.tokens import create_token
 from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
-from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
 
 file_logger = get_file_logger(__name__)
 
-
+# globals
 pi = PathInfo()
 ci = ConfigInfo()
-cid = ConfigInfoData()
 configApp = ConfigInfoAppBase()
-content_type_dict = cid.getConfigDictionary()["CONTENT_TYPE_DICTIONARY"]
-format_dict = cid.getConfigDictionary()["FILE_FORMAT_EXTENSION_DICTIONARY"]
+filesystem = FilesystemBackend(pi, content_type_config=Config.CONTENT_TYPE_DICT, format_extension_d=Config.FORMAT_DICT)
 
 for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo", "odtf.report"]:
     logger = logging.getLogger(l)
@@ -59,20 +58,7 @@ for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "
 
 
 ORCID = "0000-0002-5109-8728"
-PROD_SITE_ID = "PDBE_DEV" # ENTER THIS
-PROD_HOST = "pdb-002.ebi.ac.uk" # ENTER THIS
-PROD_CONFIG = ConfigInfo(siteId=PROD_SITE_ID)
-DEBUG = False
-
-prod_db = {
-    "host": PROD_CONFIG.get("SITE_DB_HOST_NAME"),
-    "user": PROD_CONFIG.get("SITE_DB_USER_NAME"),
-    "password": PROD_CONFIG.get("SITE_DB_PASSWORD"),
-    "port": int(PROD_CONFIG.get("SITE_DB_PORT_NUMBER")),
-    "database": "status",
-}
-
-api = DepositApi(api_key=create_token(ORCID, expiration_days=1/24), hostname="https://localhost:12000/deposition", ssl_verify=False)
+api = None
 
 
 def parse_voxel_values(filepath):
@@ -162,12 +148,11 @@ class StatusManager:
             )
 
 
-def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
+def create_deposition(orcid: str, country: Country, etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
     """NOTE: if this code ever moves to a separate package, the deposition
     will have to be created using a proper HTTP request.
     """
-    users = [ORCID]
-    country = Country.UK
+    users = [orcid]
     password = "123456"
 
     if etype == ExperimentType.EM:
@@ -190,14 +175,64 @@ def create_deposition(etype: ExperimentType, email: str, subtype: EMSubType = No
     return deposition
 
 
+def monitor_processing(test_entry: TestEntry, status_manager: StatusManager):
+    status = "started"
+
+    while status in ("running", "started", "submit"):
+        response = api.get_status(test_entry.copy_dep_id)
+
+        if isinstance(response, DepositStatus):
+            if response.details == status_manager.get_status(test_entry).message:
+                time.sleep(5)
+                continue
+
+            status_manager.update_status(test_entry, status="working", message=f"{response.details}")
+            status = response.status
+
+            if status == "error":
+                raise Exception(response.details)
+        elif isinstance(response, DepositError):
+            raise Exception(response.message)
+        else:
+            raise Exception(f"Unknown response type {type(response)}")
+
+        time.sleep(5)
+
+
+def submit_deposition(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    # remove---------------------
+    test_entry.dep_id = "D_8233000141"
+    test_entry.copy_dep_id = "D_8233000237"
+    # ---------------------------
+    test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
+    copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
+    status_manager.update_status(test_entry, status="working", message="Copying pickles from test deposition to copy deposition")
+
+    for file_name in os.listdir(test_pickles_location):
+        if file_name.endswith(".pkl"):
+            source_path = os.path.join(test_pickles_location, file_name)
+            destination_path = os.path.join(copy_pickles_location, file_name)
+            shutil.copy(source_path, destination_path)
+
+    # writing the submitOK.pkl file
+    for ppath in [copy_pickles_location, test_pickles_location]:
+        with open(os.path.join(ppath, "submitOK.pkl"), "wb") as f:
+            pickle.dump({
+                'annotator_initials': 'TST',
+                'date': '2025-06-24 10:53:30',
+                'reason': 'Submission test'
+            }, f)
+    
+    status_manager.update_status(test_entry, message="Submitting deposition")
+    requests.post(url=...)
+
+
 def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager):
     # getting all files with the 'upload' milestone doesn't work as I've seen
     # some depositions with multiple versions of -upload type
-    arch_data_path = pi.getTempDepPath(dataSetId=test_entry.dep_id)
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     uploaded_files = []
     contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
-    fs = FilesystemBackend(pi, content_type_config=content_type_dict, format_extension_d=format_dict)
 
     for f in task.files:
         content_type, file_format = f.split(".")
@@ -208,7 +243,7 @@ def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: Status
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
-            filepath = fs.locate(file_uri)
+            filepath = str(filesystem.locate(file_uri))
             file = api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
             uploaded_files.append(file)
 
@@ -229,7 +264,6 @@ def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: Status
 
 
 def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
-    fs = FilesystemBackend(pi, content_type_dict, format_dict)
     overall_success = True
 
     for cr in task.rules:
@@ -242,18 +276,18 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
         content_type, format = rule.name.split(".")
 
         copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
-        copy_file_path = fs.locate(copy_uri)
+        copy_file_path = str(filesystem.locate(copy_uri))
 
         test_entry_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
-        if not fs.exists(test_entry_uri):
+        if not filesystem.exists(test_entry_uri):
             error_msg = f"Test entry file {test_entry_uri} not found in local archive."
             status_manager.track_comparison_result(test_entry, rule.name, False, error_msg)
             raise FileNotFoundError(error_msg)
-        
-        test_entry_file_path = fs.locate(test_entry_uri)
+
+        test_entry_file_path = str(filesystem.locate(test_entry_uri))
 
         status_manager.update_status(test_entry, message=f"Comparing {copy_uri} with {test_entry_uri} using {rule.method}")
-        
+
         try:
             comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
             success = comparer.compare()
@@ -267,7 +301,7 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
                 status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
             else:
                 status_manager.update_status(test_entry, message=f"Files are the same for {content_type}.{format} using {rule.method}")
-        
+
         except Exception as e:
             overall_success = False
             error_msg = f"Error during comparison: {str(e)}"
@@ -283,59 +317,50 @@ def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusMan
 
     status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
     try:
-        fetcher.fetch(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT.value)
+        fetcher.fetch_repository(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT.value)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
 
-def create_and_process(test_entry: TestEntry, task: Task, status_manager: StatusManager):
+def create_and_process(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     try:
         exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
         exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
 
         status_manager.update_status(test_entry, status="working", message="Creating test deposition")
         try:
-            copy_dep = create_deposition(etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+            copy_dep = create_deposition(orcid=config.api.get("orcid"), country=Country(config.api.get("country")), etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
             test_entry.copy_dep_id = copy_dep.dep_id
         except Exception as e:
-            raise Exception("Error creating test deposition") from e
+            raise Exception(f"Error creating test deposition: {str(e)}") from e
 
         status_manager.update_status(test_entry, copy_dep_id=copy_dep.dep_id)
         upload_files(test_entry=test_entry, task=task, status_manager=status_manager)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        response = api.process(test_entry.copy_dep_id, **copy_elements)
-        status = "started"
+        api.process(test_entry.copy_dep_id, **copy_elements)
+        monitor_processing(test_entry, status_manager)
 
-        while status in ("running", "started", "submit"):
-            response = api.get_status(test_entry.copy_dep_id)
-
-            if isinstance(response, DepositStatus):
-                if response.details == status_manager.get_status(test_entry).message:
-                    continue
-
-                status_manager.update_status(test_entry, status="working", message=f"{response.details}")
-                status = response.status
-
-                if status == "error":
-                    raise Exception(response.details)
-            elif isinstance(response, DepositError):
-                raise Exception(response.message)
-            else:
-                raise Exception(f"Unknown response type {type(response)}")
-
-            time.sleep(5)
-        
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
+        status_manager.update_status(test_entry, status="failed", message=str(e))
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, False, str(e))
         raise
 
 
-def get_entry_info(test_entry: TestEntry, status_manager: StatusManager):
+def get_entry_info(test_entry: TestEntry, config: Config, status_manager: StatusManager):
     """Part of the main testing pipeline, hence the status_manager here. Only Jesus can judge me
     This should be using the API.
     """
+    prod_ci = ConfigInfo(siteId=config.remote_archive.site_id)
+    prod_db = {
+        "host": prod_ci.get("SITE_DB_HOST_NAME"),
+        "user": prod_ci.get("SITE_DB_USER_NAME"),
+        "password": prod_ci.get("SITE_DB_PASSWORD"),
+        "port": int(prod_ci.get("SITE_DB_PORT_NUMBER")),
+        "database": "status",
+    }
+
     connection = MySQLdb.connect(**prod_db)
     status_manager.update_status(test_entry, status="working", message="Getting entry info")
 
@@ -417,15 +442,17 @@ def generate_table(status_manager):
 
 def run_entry_tasks(entry, config, status_manager):
     """Run all tasks for a single entry sequentially."""
-    get_entry_info(entry, status_manager)
+    get_entry_info(entry, config, status_manager)
     fetch_files(entry, config, status_manager)
 
     for task in entry.tasks:
         try:
             if task.type == TaskType.UPLOAD:
-                create_and_process(entry, task, status_manager)
+                create_and_process(entry, task, config, status_manager)
             elif task.type == TaskType.COMPARE_FILES:
                 compare_files(entry, task, config, status_manager)
+            elif task.type == TaskType.SUBMIT:
+                submit_deposition(entry, config, status_manager)
             else:
                 file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
         except Exception as e:
@@ -458,18 +485,20 @@ def setup_report_generation(output_dir: str = "reports"):
 
 @click.command()
 @click.argument('test_config', type=click.Path(exists=True, dir_okay=False, readable=True), required=True)
-@click.option('--force-fetch', is_flag=True, help="Force fetch from remote archive")
 @click.option('--generate-report', is_flag=True, help='Generate HTML test report', default=True)
 @click.option('--report-dir', default="reports", help='Directory for generated reports')
-def main(test_config, force_fetch, generate_report, report_dir):
+def main(test_config, generate_report, report_dir):
     """TEST_CONFIG is the path to the test configuration file.
     """
+    global api
+
     if "pro" in getSiteId().lower(): # get the production ids from config
         click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
 
     config = Config(test_config)
     test_set = config.get_test_set()
+    api = DepositApi(api_key=create_token(config.api.get("orcid"), expiration_days=1/24), hostname=config.api.get("base_url"), ssl_verify=False)
 
     report_integration = None
     if generate_report:

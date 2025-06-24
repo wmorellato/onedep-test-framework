@@ -2,10 +2,13 @@ import re
 import json
 import hashlib
 import subprocess
+from abc import ABC
 
 import deepdiff
 
-from abc import ABC
+from odtf.common import get_file_logger
+
+logger = get_file_logger(__name__)
 
 
 class FileComparer(ABC):
@@ -42,6 +45,7 @@ class HashComparer(FileComparer):
 class CIFComparer(FileComparer):
     def _cifdiff(self, file1, file2):
         command = ['gemmi', 'cifdiff', '-q', file1, file2]
+        logger.debug(f"Running command: {' '.join(command)}")
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0:
@@ -66,7 +70,11 @@ class CIFComparer(FileComparer):
         """
         Compare files based on CIF categories (example logic).
         """
-        return not bool(self._cifdiff(self.file1, self.file2))
+        differences = self._cifdiff(self.file1, self.file2)
+        if differences:
+            logger.debug(f"Found differences between {self.file1} and {self.file2}: {differences}")
+
+        return not bool(differences)
 
 
 class JSONComparer(FileComparer):

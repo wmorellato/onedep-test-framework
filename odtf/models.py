@@ -87,7 +87,7 @@ class UploadTask(Task):
     files: List[str] = None
 
     def __init__(self, files: List[str]):
-        super().__init__(type=TaskType.UPLOAD, stop_on_failure=True)
+        super().__init__(type=TaskType.UPLOAD, stop_on_failure=False)
         self.files = files
 
 
@@ -173,3 +173,16 @@ class TestReport:
                     self.summary['failed_tasks'] += 1
                 else:
                     self.summary['pending_tasks'] += 1
+
+
+@dataclass
+class RemoteArchive:
+    host: str
+    user: str
+    site_id: str
+    key_file: str = None
+
+
+@dataclass
+class LocalArchive:
+    site_id: str
