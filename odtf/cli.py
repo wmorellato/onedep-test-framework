@@ -291,10 +291,10 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
     overall_success = True
 
     for cr in task.rules:
-        if task.source == "copy":
+        if ":copy:" in task.source:
             if not test_entry.copy_dep_id:
                 raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
-            task.source = f"wwpdb://deposit-ui/{test_entry.copy_dep_id}/"
+            task.source = task.source.replace(":copy:", test_entry.copy_dep_id)
 
         rule = config.get_compare_rule(cr.name)
         content_type, format = rule.name.split(".")

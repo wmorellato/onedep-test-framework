@@ -54,7 +54,7 @@ test_set:
   #         - em-half-volume.map
   #         - img-emdb.jpg
   #     - compare_files:
-  #       source: copy
+  #       source: wwpdb://deposit-ui/:copy:/
   #       rules:
   #         - model.pdbx
   #         - model-upload.pdbx
@@ -62,7 +62,7 @@ test_set:
   #         - mapfix-header-report.json
   #     - submit
   #     - compare_files:
-  #       source: copy
+  #       source: wwpdb://deposit-ui/:copy:/
   #       rules:
   #         - model.pdbx
 
@@ -71,7 +71,7 @@ test_set:
   #   tasks:
   #     - submit
   #     - compare_files:
-  #       source: copy
+  #       source: wwpdb://deposit-ui/:copy:/
   #       rules:
   #         - model.pdbx
 
@@ -82,7 +82,7 @@ test_set:
   #         - model.pdbx
   #         - structure-factors.pdbx
   #     - compare_files:
-  #       source: copy
+  #       source: wwpdb://deposit-ui/:copy:/
   #       rules:
   #         - model.pdbx
   #         - structure-factors.pdbx
@@ -90,7 +90,7 @@ test_set:
   #         - assembly-model.pdbx
   #     - submit
   #     - compare_files:
-  #       source: copy
+  #       source: wwpdb://deposit-ui/:copy:/
   #       rules:
   #         - model.pdbx
   # D_8233000197:
@@ -109,7 +109,7 @@ test_set:
           - model.pdbx
           - structure-factors.pdbx
       - compare_files:
-        source: copy
+        source: wwpdb://deposit-ui/:copy:/
         rules:
           - model.pdbx
           - structure-factors.pdbx
@@ -117,6 +117,9 @@ test_set:
           - model-issues-report.json
       - submit
       - compare_files:
-        source: copy
+        source: wwpdb://archive/:copy:/
         rules:
           - model.pdbx
+
+report:
+  location: /home/onedep/reports
