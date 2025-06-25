@@ -11,7 +11,15 @@ keywords = ["deposition", "archive", "files", "automation"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
-requests = "^2.28.1"
+requests = "^2.32.4"
+click = "8.2.1"
+deepdiff = "8.4.2"
+Django = "3.2.25"
+Jinja2 = "3.1.6"
+MySQL-python = "1.2.5"
+PyYAML = "6.0.2"
+rich = "14.0.0"
+onedep_deposition = "0.2"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.2.0"
