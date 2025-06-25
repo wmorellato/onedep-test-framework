@@ -43,6 +43,10 @@ from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
 from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
 
+from django.conf import settings
+from django.utils.module_loading import import_string
+from django.utils.encoding import force_bytes
+
 file_logger = get_file_logger(__name__)
 
 # globals
@@ -200,10 +204,11 @@ def monitor_processing(test_entry: TestEntry, status_manager: StatusManager):
 
 
 def submit_deposition(test_entry: TestEntry, config: Config, status_manager: StatusManager):
-    # remove---------------------
-    test_entry.dep_id = "D_8233000141"
-    test_entry.copy_dep_id = "D_8233000237"
-    # ---------------------------
+    def get_cookie_signer(salt="django.core.signing.get_cookie_signer"):
+        Signer = import_string(settings.SIGNING_BACKEND)
+        key = force_bytes(settings.SECRET_KEY)  # SECRET_KEY may be str or bytes.
+        return Signer(b"django.http.cookies" + key, salt=salt)
+
     test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
     status_manager.update_status(test_entry, status="working", message="Copying pickles from test deposition to copy deposition")
@@ -222,9 +227,28 @@ def submit_deposition(test_entry: TestEntry, config: Config, status_manager: Sta
                 'date': '2025-06-24 10:53:30',
                 'reason': 'Submission test'
             }, f)
-    
+
+    orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
+
+    # get the csrftoken from an arbitrary request
+    session = requests.Session()
+    session.verify = False
+
+    response = session.get(
+        url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", test_entry.copy_dep_id, "view"),
+        cookies={"depositor-orcid": orcid_cookie},
+    )
+    csrftoken = response.cookies.get("csrftoken")
+
     status_manager.update_status(test_entry, message="Submitting deposition")
-    requests.post(url=...)
+    response = session.post(
+        url=os.path.join(config.api.get("base_url"), "submitRequest"),
+        json={},
+        cookies={"depositor-orcid": orcid_cookie},
+        headers={"x-csrftoken": csrftoken, "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "referer": config.api.get("base_url")}
+    )
+
+    file_logger.info("Submit response: %s", response.text)
 
 
 def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager):

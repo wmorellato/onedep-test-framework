@@ -65,7 +65,18 @@ class RemoteFetcher:
         self._fetch_data_and_pickles(dep_id, repository)
 
     def _local_exists(self, dep_id):
-        return os.path.exists(self.local_pi.getTempDepPath(dataSetId=dep_id))
+        """Checks if a deposition exists in the local archive.
+        This needs to be improved. Separate data and pickles check to download only what is needed.
+        """
+        data_path = self.local_pi.getTempDepPath(dataSetId=dep_id)
+        if not os.path.exists(data_path) or len(os.listdir(data_path)) == 0:
+            return False
+
+        local_pickles_path = self.local_pi.getDirPath(dataSetId=dep_id, fileSource="pickles")
+        if not os.path.exists(local_pickles_path) or len(os.listdir(local_pickles_path)) == 0:
+            return False
+
+        return True
 
     def _remove_from_local(self, dep_id):
         if not self._local_exists(dep_id):

@@ -4,13 +4,13 @@ api:
   country: United Kingdom
 
 remote_archive:
-  host: localhost
-  user: onedep
-  site_id: PDBE_DEV
-  # host: pdb-002.ebi.ac.uk
-  # user: w3_pdb05
-  # site_id: PDBE_PROD
-  # key_file: /home/onedep/.ssh/id_ebi
+  # host: localhost
+  # user: onedep
+  # site_id: PDBE_DEV
+  host: pdb-002.ebi.ac.uk
+  user: w3_pdb05
+  site_id: PDBE_PROD
+  key_file: /home/onedep/.ssh/id_ebi
 
 compare_rules:
   model.pdbx:
@@ -65,19 +65,18 @@ test_set:
   #       source: copy
   #       rules:
   #         - model.pdbx
-  D_8233000237:
-    tasks:
-      - submit
-      - compare_files:
-        source: copy
-        rules:
-          - model.pdbx
-  D_8233000141:
-    tasks:
-      - compare_files:
-        source: copy
-        rules:
-          - model.pdbx
+
+  # test submit only
+  # D_8233000235:
+  #   tasks:
+  #     - submit
+  #     - compare_files:
+  #       source: copy
+  #       rules:
+  #         - model.pdbx
+
+  # D_8233000141:
+  #   tasks:
   #     - upload:
   #       files:
   #         - model.pdbx
@@ -103,21 +102,21 @@ test_set:
   #         - model-upload.pdbx 
   #         - model-upload-convert.pdbx
   #         - mapfix-header-report.json
-  # D_1292123393:
-  #   tasks:
-  #     - upload:
-  #       files:
-  #         - model.pdbx
-  #         - structure-factors.pdbx
-  #     - compare_files:
-  #       source: copy
-  #       rules:
-  #         - model.pdbx
-  #         - structure-factors.pdbx
-  #         - model-aux.pdbx
-  #         - model-issues-report.json
-  #     - submit
-  #     - compare_files:
-  #       source: copy
-  #       rules:
-  #         - model.pdbx
+  D_1292123393:
+    tasks:
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+      - submit
+      - compare_files:
+        source: copy
+        rules:
+          - model.pdbx
