@@ -490,18 +490,16 @@ def run_entry_tasks(entry, config, status_manager):
     status_manager.update_status(entry, status="finished", message=f"Completed all tasks for entry {entry.dep_id}")
 
 
-def setup_report_generation(output_dir: str = "reports"):
+def setup_report_generation(config, output_dir: str = "reports"):
     """Setup report generation components"""
     Path(output_dir).mkdir(exist_ok=True)
     template_dir = Path(__file__).parent / "templates"
     template_path = template_dir / "test_report.html"
     if not template_path.exists():
-        # You would copy the HTML template content here
-        # For now, we'll assume it exists
         file_logger.warning(f"Template file not found: {template_path}")
     
     # Initialize report generator
-    generator = TestReportGenerator(template_dir=template_dir, output_dir=output_dir)
+    generator = TestReportGenerator(config=config, template_dir=template_dir, output_dir=output_dir)
     integration = TestReportIntegration(generator)
     
     return generator, integration
@@ -528,6 +526,7 @@ def main(test_config, generate_report, report_dir):
     if generate_report:
         try:
             _, report_integration = setup_report_generation(
+                config=config,
                 output_dir="/wwpdb/onedep/deployments/dev/source/onedep-webfe/webapps/htdocs/"
             )
             click.echo(f"Report generation enabled. Reports will be saved to: {report_dir}")

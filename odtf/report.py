@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 
 from jinja2 import Environment, FileSystemLoader
 
+from odtf.config import Config
 from odtf.models import TestEntry, TestReport, TaskStatus, CompareFilesTask
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 class TestReportGenerator:
     """Generates HTML test reports from test entries using Bootstrap templates"""
     
-    def __init__(self, template_dir: str = "templates", output_dir: str = "reports"):
+    def __init__(self, config: Config, template_dir: str = "templates", output_dir: str = "reports"):
         """
         Initialize the report generator
         
@@ -29,6 +30,7 @@ class TestReportGenerator:
             template_dir: Directory containing Jinja2 templates
             output_dir: Directory where reports will be generated
         """
+        self.config = config
         self.template_dir = Path(template_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
@@ -134,6 +136,7 @@ class TestReportGenerator:
         prepared_entries = self.prepare_test_entries_for_report(test_entries, log_dir)
         
         report = TestReport(
+            base_url=self.config.api.get("base_url"),
             test_entries=prepared_entries,
             title=title,
             generation_time=datetime.now()

@@ -195,11 +195,17 @@
                 <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" 
                      aria-labelledby="heading{{ loop.index }}" data-bs-parent="#testEntriesAccordion">
                     <div class="accordion-body">
+                        <!-- Link to DepUI -->
+                        <div class="mb-3">
+                            <a href="{{ report.base_url }}/api/v1/depositions/{{ entry.copy_dep_id}}/view" class="btn btn-outline-primary btn-sm log-link" target="_blank">
+                                <i class="bi bi-file-text"></i> Access deposition
+                            </a>
+                        </div>
                         <!-- Log File Link -->
-                        {% if entry.log_file %}
+                        {% if False %}
                         <div class="mb-3">
                             <a href="{{ entry.log_file }}" class="btn btn-outline-primary btn-sm log-link" target="_blank">
-                                <!-- <i class="bi bi-file-text"></i> View Log File -->
+                                <i class="bi bi-file-text"></i> View Log File
                             </a>
                         </div>
                         {% endif %}

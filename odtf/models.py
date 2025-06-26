@@ -150,6 +150,7 @@ class EntryStatus:
 @dataclass
 class TestReport:
     """Model for the complete test report"""
+    base_url: str
     test_entries: List[TestEntry]
     generation_time: datetime = field(default_factory=datetime.now)
     title: str = "ODTF Test Report"
