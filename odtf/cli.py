@@ -525,49 +525,51 @@ def main(test_config, generate_report, report_dir):
     report_integration = None
     if generate_report:
         try:
+            webapps_dir = ci.get("TOP_WWPDB_WEBAPPS_DIR")
             _, report_integration = setup_report_generation(
                 config=config,
-                output_dir="/wwpdb/onedep/deployments/dev/source/onedep-webfe/webapps/htdocs/"
+                output_dir=os.path.join(webapps_dir, "htdocs")
             )
             click.echo(f"Report generation enabled. Reports will be saved to: {report_dir}")
         except Exception as e:
             click.echo(f"Warning: Could not setup report generation: {e}", err=True)
             generate_report = False
 
-    with Live(refresh_per_second=15) as live:
-        def update_callback():
-            """Callback to update the live display"""
+    try:
+        with Live(refresh_per_second=15) as live:
+            def update_callback():
+                """Callback to update the live display"""
+                live.update(generate_table(status_manager))
+
+            status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
             live.update(generate_table(status_manager))
 
-        status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
-        live.update(generate_table(status_manager))
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {executor.submit(run_entry_tasks, te, config, status_manager): te.dep_id for te in test_set}
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(run_entry_tasks, te, config, status_manager): te.dep_id for te in test_set}
+                for future in concurrent.futures.as_completed(futures):
+                    dep_id = futures[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        file_logger.error("Error processing entry %s: %s", dep_id, e, exc_info=True)
+                        status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
 
-            for future in concurrent.futures.as_completed(futures):
-                dep_id = futures[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    file_logger.error("Error processing entry %s: %s", dep_id, e, exc_info=True)
-                    status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
-
-    if generate_report and report_integration:
-        try:
-            click.echo("Generating test report...")
-            report_path = report_integration.generate_final_report(
-                test_set, 
-                status_manager,
-                output_filename=f"report.html"
-            )
-            click.echo(f"Test report generated: {report_path}")
-        except Exception as e:
-            click.echo(f"Failed to generate test report: {e}", err=True)
-            file_logger.error(f"Report generation failed: {e}")
+    except KeyboardInterrupt:
+        click.echo("🚫 Test interrupted by user.", err=True)
+    finally:
+        if generate_report and report_integration:
+            try:
+                report_path = report_integration.generate_final_report(
+                    test_set, 
+                    status_manager,
+                    output_filename=f"report.html"
+                )
+                click.echo(f"📝 Test report generated. Read it in {config.api.get('base_url')}/report.html")
+            except Exception as e:
+                click.echo(f"Failed to generate test report: {e}", err=True)
+                file_logger.error(f"Report generation failed: {e}")
 
 
 if __name__ == '__main__':
     main()
-
-# D_8233000125 D_8233000126 D_8233000127 D_8233000128 D_8233000129 D_8233000130 D_8233000131 D_8233000132 D_8233000133 D_8233000134 D_8233000135 D_8233000136 D_8233000137 D_8233000138
