@@ -9,14 +9,11 @@ from onedep_deposition.models import (EMSubType, ExperimentType)
 
 class FileTypeMapping:
     ANY_FORMAT = {
-        "parameter-file.any": FileType.CRYSTAL_PARAMETER,
-        "topology-file.any": FileType.CRYSTAL_TOPOLOGY,
-        "virus-matrix.any": FileType.VIRUS_MATRIX,
-        "nmr-restraints.any": FileType.NMR_TOPOLOGY_AMBER,
-        "nmr-restraints.any": FileType.NMR_RESTRAINT_CNS,
-        "topology-file.any": FileType.NMR_TOPOLOGY_GROMACS,
-        "nmr-restraints.any": FileType.NMR_RESTRAINT_OTHER,
-        "nmr-peaks.any": FileType.NMR_SPECTRAL_PEAK,
+        "parameter-file": FileType.CRYSTAL_PARAMETER,
+        "virus-matrix": FileType.VIRUS_MATRIX,
+        "topology-file": FileType.NMR_TOPOLOGY_GROMACS,
+        "nmr-restraints": FileType.NMR_RESTRAINT_OTHER,
+        "nmr-peaks": FileType.NMR_SPECTRAL_PEAK,
     }
 
     MAP = {
@@ -33,12 +30,14 @@ class FileTypeMapping:
         "structure-factors.mtz": FileType.CRYSTAL_MTZ,
         "nmr-chemical-shifts.nmr-star": FileType.NMR_ACS,
         "nmr-restraints.amber": FileType.NMR_RESTRAINT_AMBER,
-        "nmr-restraints.aria": FileType.NMR_RESTRAINT_BIOSYM,
-        "nmr-restraints.biosym": FileType.NMR_RESTRAINT_CHARMM,
-        "nmr-restraints.charmm": FileType.NMR_RESTRAINT_CYANA,
-        "nmr-restraints.cns": FileType.NMR_RESTRAINT_DYNAMO,
-        "nmr-restraints.cyana": FileType.NMR_RESTRAINT_PALES,
-        "nmr-restraints.dynamo": FileType.NMR_RESTRAINT_TALOS,
+        # "nmr-restraints.aria": FileType.NMR_RESTRAINT_ARIA,  # MISSING
+        "nmr-restraints.biosym": FileType.NMR_RESTRAINT_BIOSYM,
+        "nmr-restraints.charmm": FileType.NMR_RESTRAINT_CHARMM,
+        "nmr-restraints.cns": FileType.NMR_RESTRAINT_CNS,
+        "nmr-restraints.cyana": FileType.NMR_RESTRAINT_CYANA,
+        "nmr-restraints.pales": FileType.NMR_RESTRAINT_DYNAMO,
+        "nmr-restraints.talos": FileType.NMR_RESTRAINT_DYNAMO,
+        "nmr-restraints.dynamo": FileType.NMR_RESTRAINT_DYNAMO,
         "nmr-restraints.gromacs": FileType.NMR_RESTRAINT_GROMACS,
         "nmr-restraints.isd": FileType.NMR_RESTRAINT_ISD,
         "nmr-restraints.rosetta": FileType.NMR_RESTRAINT_ROSETTA,
@@ -48,14 +47,15 @@ class FileTypeMapping:
         "nmr-data-str.nmr-star": FileType.NMR_UNIFIED_STAR,
     }
 
+
     @staticmethod
     def get_file_type(content_type: str, format: str) -> FileType:
         """Get the FileType enum based on the filename."""
-        if content_type in FileTypeMapping.ANY_FORMAT:
-            return FileTypeMapping.ANY_FORMAT[content_type]
-
         if f"{content_type}.{format}" in FileTypeMapping.MAP:
             return FileTypeMapping.MAP[f"{content_type}.{format}"]
+
+        if content_type in FileTypeMapping.ANY_FORMAT:
+            return FileTypeMapping.ANY_FORMAT[content_type]
 
         raise ValueError(f"Unknown content type and format combination: {content_type}.{format}")
 

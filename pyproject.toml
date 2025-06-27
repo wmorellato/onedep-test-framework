@@ -19,6 +19,7 @@ Jinja2 = "3.1.6"
 PyYAML = "6.0.2"
 rich = "14.0.0"
 onedep_deposition = "0.2"
+gemmi-program = "0.7.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.2.0"
