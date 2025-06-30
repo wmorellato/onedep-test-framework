@@ -520,7 +520,7 @@ def main(test_config, generate_report, report_dir):
 
     config = Config(test_config)
     test_set = config.get_test_set()
-    api = DepositApi(api_key=create_token(config.api.get("orcid"), expiration_days=1/24), hostname=config.api.get("base_url"), ssl_verify=False)
+    api = DepositApi(api_key=create_token(config.api.get("orcid"), expiration_days=7), hostname=config.api.get("base_url"), ssl_verify=False)
 
     report_integration = None
     if generate_report:
