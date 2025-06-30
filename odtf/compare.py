@@ -4,7 +4,7 @@ import hashlib
 import subprocess
 from abc import ABC
 
-import deepdiff
+from deepdiff import DeepDiff
 
 from odtf.common import get_file_logger
 
@@ -76,16 +76,31 @@ class CIFComparer(FileComparer):
 
         return not bool(differences)
 
+    def get_report(self) -> list:
+        """
+        Get a report of the differences found during comparison.
+        """
+        return self._cifdiff(self.file1, self.file2)
+
 
 class JSONComparer(FileComparer):
-    def compare(self) -> bool:
+    def compare(self) -> dict:
         """
         Compare files based on JSON keys and items.
         """
         with open(self.file1, 'r') as f1, open(self.file2, 'r') as f2:
             json1 = json.load(f1)
             json2 = json.load(f2)
-        return json1 == json2
+        return bool(DeepDiff(json1, json2, ignore_order=True))
+
+    def get_report(self) -> dict:
+        """
+        Get a report of the differences found during comparison.
+        """
+        with open(self.file1, 'r') as f1, open(self.file2, 'r') as f2:
+            json1 = json.load(f1)
+            json2 = json.load(f2)
+        return DeepDiff(json1, json2, ignore_order=True)
 
 
 def comparer_factory(comparison_type: str, file1: str, file2: str) -> FileComparer:

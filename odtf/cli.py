@@ -314,13 +314,13 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
 
         try:
             comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
-            success = comparer.compare()
+            diffs = comparer.get_report()
             
             # Track the individual rule result
-            error_msg = None if success else f"Comparison failed for {content_type}.{format} using {rule.method}"
-            status_manager.track_comparison_result(test_entry, rule.name, success, error_msg)
+            error_msg = None if diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
+            status_manager.track_comparison_result(test_entry, rule.name, bool(diffs), str(diffs))
             
-            if not success:
+            if not diffs:
                 overall_success = False
                 status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
             else:
