@@ -179,19 +179,34 @@ def create_deposition(orcid: str, country: Country, etype: ExperimentType, email
     return deposition
 
 
-def monitor_processing(test_entry: TestEntry, status_manager: StatusManager):
+def monitor_processing(test_entry: TestEntry, status_manager: StatusManager, timeout_minutes=30):
+    """Monitor processing with exponential backoff and timeout protection"""
+    start_time = time.time()
     status = "started"
+    sleep_time = 5
+    max_sleep = 30
+    
+    file_logger.info(f"Starting monitor_processing for {test_entry.dep_id}")
 
     while status in ("running", "started", "submit"):
+        if time.time() - start_time > timeout_minutes * 60:
+            raise Exception(f"Processing timeout after {timeout_minutes} minutes for {test_entry.dep_id}")
+        
+        file_logger.debug(f"Checking status for {test_entry.copy_dep_id}, current sleep_time: {sleep_time}")
         response = api.get_status(test_entry.copy_dep_id)
 
         if isinstance(response, DepositStatus):
             if response.details == status_manager.get_status(test_entry).message:
-                time.sleep(5)
+                file_logger.debug(f"No status change for {test_entry.dep_id}, sleeping {sleep_time}s")
+                time.sleep(sleep_time)
+                sleep_time = min(sleep_time * 1.2, max_sleep)  # Exponential backoff
                 continue
 
+            # Status changed, reset sleep time
+            sleep_time = 5
             status_manager.update_status(test_entry, status="working", message=f"{response.details}")
             status = response.status
+            file_logger.info(f"Status update for {test_entry.dep_id}: {status} - {response.details}")
 
             if status == "error":
                 raise Exception(response.details)
@@ -200,7 +215,7 @@ def monitor_processing(test_entry: TestEntry, status_manager: StatusManager):
         else:
             raise Exception(f"Unknown response type {type(response)}")
 
-        time.sleep(5)
+        time.sleep(sleep_time)
 
 
 def submit_deposition(test_entry: TestEntry, config: Config, status_manager: StatusManager):
@@ -536,7 +551,8 @@ def main(test_config, generate_report, report_dir):
             generate_report = False
 
     try:
-        with Live(refresh_per_second=15) as live:
+        # Reduced refresh rate from 15 to 2 times per second
+        with Live(refresh_per_second=2) as live:
             def update_callback():
                 """Callback to update the live display"""
                 live.update(generate_table(status_manager))
