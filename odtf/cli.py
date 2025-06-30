@@ -330,12 +330,11 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
         try:
             comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
             diffs = comparer.get_report()
-            
-            # Track the individual rule result
+
             error_msg = None if diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
-            status_manager.track_comparison_result(test_entry, rule.name, bool(diffs), str(diffs))
+            status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), str(diffs))
             
-            if not diffs:
+            if diffs:
                 overall_success = False
                 status_manager.update_status(test_entry, status="warning", message=f"Comparison failed for {content_type}.{format} using {rule.method}")
             else:
@@ -560,7 +559,7 @@ def main(test_config, generate_report, report_dir):
             status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
             live.update(generate_table(status_manager))
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 futures = {executor.submit(run_entry_tasks, te, config, status_manager): te.dep_id for te in test_set}
 
                 for future in concurrent.futures.as_completed(futures):
