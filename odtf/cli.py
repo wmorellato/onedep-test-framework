@@ -276,12 +276,12 @@ def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: Status
 
     for f in task.files:
         content_type, file_format = f.split(".")
+        content_type = f"{content_type}-upload"
         if content_type not in type_dict:
             type_dict[content_type] = 1
         else:
             type_dict[content_type] += 1
 
-        content_type = f"{content_type}-upload"
         file_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=file_format, part_number=type_dict[content_type], version="latest")
 
         status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}`")
