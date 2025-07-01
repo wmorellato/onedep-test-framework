@@ -136,7 +136,7 @@ class TestReportGenerator:
         prepared_entries = self.prepare_test_entries_for_report(test_entries, log_dir)
         
         report = TestReport(
-            base_url=self.config.api.get("base_url"),
+            base_url=self.config.report.get("depui_url"),
             test_entries=prepared_entries,
             title=title,
             generation_time=datetime.now()

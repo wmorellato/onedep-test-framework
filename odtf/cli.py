@@ -596,7 +596,7 @@ def main(test_config, generate_report, report_dir):
                     status_manager,
                     output_filename=f"report.html"
                 )
-                click.echo(f"📝 Test report generated. Read it in {config.api.get('base_url')}/report.html")
+                click.echo(f"📝 Test report generated. Read it in {config.report.get('depui_url')}/report.html")
             except Exception as e:
                 click.echo(f"Failed to generate test report: {e}", err=True)
                 file_logger.error(f"Report generation failed: {e}")

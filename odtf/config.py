@@ -35,6 +35,7 @@ class Config:
         self.compare_rules: Dict[str, CompareRule] = {}
         self.test_set: Dict[str, TestEntry] = {}
         self.api = {}
+        self.report = {}
         self._parse()
 
     def _parse(self):
@@ -42,6 +43,7 @@ class Config:
             data = yaml.safe_load(f)
 
         self.api = data.get("api", {})
+        self.report = data.get("report", {})
         self.remote_archive = RemoteArchive(**data["remote_archive"])
 
         for rule_name, rule_data in data["compare_rules"].items():

@@ -3,6 +3,9 @@ api:
   orcid: 0000-0002-5109-8728
   country: United Kingdom
 
+report:
+  depui_url: https://onedep-ann-prod-001.wwpdb.org:12000/
+
 remote_archive:
   host: pdb-002.ebi.ac.uk
   user: w3_pdb05
@@ -136,6 +139,3 @@ test_set:
           - model-issues-report.json
           - structure-factor-report.json
       - submit
-
-report:
-  location: /home/onedep/reports
