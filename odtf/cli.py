@@ -544,7 +544,7 @@ def main(test_config, generate_report, report_dir):
     """
     global api
 
-    if "pro" in getSiteId().lower(): # get the production ids from config
+    if getSiteId() in ["PDBE_PROD"]: # get the production ids from config
         click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
 
