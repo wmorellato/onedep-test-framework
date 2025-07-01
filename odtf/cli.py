@@ -376,8 +376,17 @@ def create_and_process(test_entry: TestEntry, task: Task, config: Config, status
         upload_files(test_entry=test_entry, task=task, status_manager=status_manager)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        api.process(test_entry.copy_dep_id, **copy_elements)
-        monitor_processing(test_entry, status_manager)
+        response = api.process(test_entry.copy_dep_id, **copy_elements)
+        # monitor_processing(test_entry, status_manager)
+        if isinstance(response, DepositStatus):
+            status_manager.update_status(test_entry, status="working", message=f"{response.details}")
+            status = response.status
+            file_logger.info(f"Processing response {test_entry.dep_id}: {status} - {response.details}")
+
+            if status == "error":
+                raise Exception(response.details)
+        elif isinstance(response, DepositError):
+            raise Exception(response.message)
 
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
