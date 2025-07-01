@@ -46,13 +46,16 @@ class Config:
         self.report = data.get("report", {})
         self.remote_archive = RemoteArchive(**data["remote_archive"])
 
-        for rule_name, rule_data in data["compare_rules"].items():
+        for rule_name, rule_data in data.get("compare_rules", {}).items():
             self.compare_rules[rule_name] = CompareRule(
                 name=rule_name,
                 method=rule_data["method"],
                 version=rule_data["version"],
                 categories=rule_data.get("categories", [])
             )
+        
+        if "test_set" not in data:
+            raise ValueError("Test set is missing in the configuration file.")
 
         for dep_id, entry_data in data["test_set"].items():
             tasks = [parse_task(task_data) for task_data in entry_data["tasks"]]
