@@ -376,8 +376,9 @@ def create_and_process(test_entry: TestEntry, task: Task, config: Config, status
         upload_files(test_entry=test_entry, task=task, status_manager=status_manager)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        response = api.process(test_entry.copy_dep_id, **copy_elements)
+        api.process(test_entry.copy_dep_id, **copy_elements)
         # monitor_processing(test_entry, status_manager)
+        response = api.get_status(test_entry.copy_dep_id)
         if isinstance(response, DepositStatus):
             status_manager.update_status(test_entry, status="working", message=f"{response.details}")
             status = response.status
