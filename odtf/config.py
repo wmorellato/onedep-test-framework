@@ -59,7 +59,7 @@ class Config:
 
         for dep_id, entry_data in data["test_set"].items():
             tasks = [parse_task(task_data) for task_data in entry_data["tasks"]]
-            self.test_set[dep_id] = TestEntry(dep_id=dep_id, tasks=tasks)
+            self.test_set[dep_id] = TestEntry(dep_id=dep_id, tasks=tasks, skip_fetch=entry_data.get("skip_fetch", False))
 
     def get_remote_archive(self) -> RemoteArchive:
         return self.remote_archive

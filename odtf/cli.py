@@ -487,7 +487,9 @@ def generate_table(status_manager):
 def run_entry_tasks(entry, config, status_manager):
     """Run all tasks for a single entry sequentially."""
     get_entry_info(entry, config, status_manager)
-    fetch_files(entry, config, status_manager)
+
+    if not entry.skip_fetch:
+        fetch_files(entry, config, status_manager)
 
     for task in entry.tasks:
         try:
