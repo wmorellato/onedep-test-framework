@@ -124,6 +124,7 @@ class TestEntry:
     copy_dep_id: str = field(default=None)
     tasks: List[Task] = field(default_factory=list)
     log_file: Optional[str] = None
+    skip_fetch: bool = False
 
     def has_task(self, task_type: TaskType) -> bool:
         return any(task.type == task_type for task in self.tasks)
