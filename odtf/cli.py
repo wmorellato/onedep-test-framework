@@ -271,12 +271,18 @@ def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: Status
     # some depositions with multiple versions of -upload type
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     uploaded_files = []
+    type_dict = {}
     contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
 
     for f in task.files:
         content_type, file_format = f.split(".")
+        if content_type not in type_dict:
+            type_dict[content_type] = 1
+        else:
+            type_dict[content_type] += 1
+
         content_type = f"{content_type}-upload"
-        file_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=file_format, version="latest")
+        file_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=file_format, part_number=type_dict[content_type], version="latest")
 
         status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}`")
 
