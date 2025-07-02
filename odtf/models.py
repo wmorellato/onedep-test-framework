@@ -138,7 +138,7 @@ class EntryStatus:
     exp_type: ExperimentType = None
     exp_subtype: EMSubType = None
     copy_dep_id: str = "?"
-    message: str = "Starting tests..."
+    message: str = "Preparing..."
 
     def __repr__(self):
         return f"EntryStatus(status={self.status}, arch_dep_id={self.arch_dep_id}, arch_entry_id={self.arch_entry_id}, exp_type={self.exp_type}, test_dep_id={self.copy_dep_id}, message={self.message})"
