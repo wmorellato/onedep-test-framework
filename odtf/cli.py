@@ -578,8 +578,7 @@ def main(test_config, generate_report, report_dir):
             generate_report = False
 
     try:
-        # Reduced refresh rate from 15 to 2 times per second
-        with Live(refresh_per_second=15) as live:
+        with Live(refresh_per_second=3) as live:
             def update_callback():
                 """Callback to update the live display"""
                 live.update(generate_table(status_manager))
