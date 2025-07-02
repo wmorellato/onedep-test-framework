@@ -265,6 +265,8 @@ def submit_deposition(test_entry: TestEntry, config: Config, status_manager: Sta
     )
     csrftoken = response.cookies.get("csrftoken")
 
+    response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+
     status_manager.update_status(test_entry, message="Submitting deposition")
     response = session.post(
         url=os.path.join(config.api.get("base_url"), "submitRequest"),
