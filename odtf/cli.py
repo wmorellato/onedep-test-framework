@@ -225,14 +225,24 @@ def submit_deposition(test_entry: TestEntry, config: Config, status_manager: Sta
         return Signer(b"django.http.cookies" + key, salt=salt)
 
     test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
-    copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
-    status_manager.update_status(test_entry, status="working", message="Copying pickles from test deposition to copy deposition")
 
-    for file_name in os.listdir(test_pickles_location):
-        if file_name.endswith(".pkl"):
-            source_path = os.path.join(test_pickles_location, file_name)
-            destination_path = os.path.join(copy_pickles_location, file_name)
-            shutil.copy(source_path, destination_path)
+    if test_entry.copy_dep_id:
+        copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
+        status_manager.update_status(test_entry, status="working", message="Copying pickles from test deposition to copy deposition")
+
+        for file_name in os.listdir(test_pickles_location):
+            if file_name.endswith(".pkl"):
+                source_path = os.path.join(test_pickles_location, file_name)
+                destination_path = os.path.join(copy_pickles_location, file_name)
+                shutil.copy(source_path, destination_path)
+    else:
+        # standalone testing
+        # we need to copy the pdbx_contact_author pickle
+        test_entry.copy_dep_id = test_entry.dep_id
+        copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
+        pklpath = Path(__file__).parent / "resources" / "pdbx_contact_author.pkl"
+        file_logger.info("Copying pickle file %s to %s", pklpath, test_pickles_location)
+        shutil.copy(pklpath, copy_pickles_location)
 
     # writing the submitOK.pkl file
     for ppath in [copy_pickles_location, test_pickles_location]:
@@ -559,7 +569,7 @@ def main(test_config, generate_report, report_dir):
 
     try:
         # Reduced refresh rate from 15 to 2 times per second
-        with Live(refresh_per_second=2) as live:
+        with Live(refresh_per_second=15) as live:
             def update_callback():
                 """Callback to update the live display"""
                 live.update(generate_table(status_manager))
