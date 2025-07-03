@@ -130,7 +130,7 @@ test_set:
   D_1292133558: # em single particle
     tasks:
       - upload:
-        files: # list here all required files for this dep. It still doesn´t support multiple partitions. Working on it
+        files: # list here all required files for this dep. If the same content-type.format is used, it will search for additional partitions
           - model.pdb
           - em-volume.map
           - em-half-volume.map
