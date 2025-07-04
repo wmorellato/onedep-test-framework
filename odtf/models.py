@@ -61,9 +61,11 @@ class FileTypeMapping:
 
 
 class TaskType(Enum):
+    CREATE = "create"
     UPLOAD = "upload"
     SUBMIT = "submit"
     COMPARE_FILES = "compare_files"
+    COMPARE_REPOS = "compare_repos"
 
 
 class TaskStatus(Enum):
@@ -116,6 +118,15 @@ class CompareFilesTask(Task):
         super().__init__(type=TaskType.COMPARE_FILES)
         self.source = source
         self.rules = [CompareRule(name=rule, method="", version="") for rule in rules]
+
+
+@dataclass
+class CompareReposTask(Task):
+    source: Optional[str] = None
+
+    def __init__(self, source: Optional[str]):
+        super().__init__(type=TaskType.COMPARE_REPOS)
+        self.source = source
 
 
 @dataclass

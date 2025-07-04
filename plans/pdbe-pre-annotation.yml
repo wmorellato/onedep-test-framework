@@ -48,6 +48,7 @@ compare_rules:
 test_set:
   D_1292133558: # em single particle
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
       - upload:
         files:
           - model.pdb
@@ -65,6 +66,7 @@ test_set:
       - submit
   D_1292128033: # ssnmr
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
       - upload:
         files:
           - nmr-chemical-shifts.nmr-star
@@ -78,6 +80,7 @@ test_set:
       - submit
   D_1292123393: # xray
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
       - upload:
         files:
           - model.pdbx
@@ -96,6 +99,7 @@ test_set:
           - model.pdbx
   D_1292137346: # xray (sf in mtz format)
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
       - upload:
         files:
           - model.pdbx
@@ -111,6 +115,7 @@ test_set:
       - submit
   D_1290025479: # fiber
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
       - upload:
         files:
           - model.pdbx
@@ -126,6 +131,7 @@ test_set:
       - submit
   D_1292109328: # ec
     tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
       - upload:
         files:
           - model.pdbx

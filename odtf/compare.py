@@ -7,6 +7,7 @@ from abc import ABC
 from deepdiff import DeepDiff
 
 from odtf.common import get_file_logger
+from odtf.archive import RemoteArchive
 
 logger = get_file_logger(__name__)
 
@@ -101,6 +102,24 @@ class JSONComparer(FileComparer):
             json1 = json.load(f1)
             json2 = json.load(f2)
         return DeepDiff(json1, json2, ignore_order=True)
+
+
+class RepositoryComparer:
+    """
+    Class to compare two repositories.
+    This is a placeholder for future implementation.
+    """
+
+    def __init__(self, repo1: str, repo2: str):
+        self.repo1 = repo1
+        self.repo2 = repo2
+
+    def compare(self) -> bool:
+        """
+        Compare two repositories.
+        Placeholder method for future implementation.
+        """
+        raise NotImplementedError("Repository comparison is not implemented yet.")
 
 
 def comparer_factory(comparison_type: str, file1: str, file2: str) -> FileComparer:

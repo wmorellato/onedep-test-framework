@@ -27,6 +27,46 @@ class RemoteFetcher:
         self.cache_size = cache_size
         self.force = force
 
+    def fetch_file_list(self, dep_id: str, repository: str = "deposit") -> List[WwPDBResourceURI]:
+        """ Fetches a list of files from the remote archive for a given deposition ID and repository.
+        
+        Args:
+            dep_id (str): The deposition ID to fetch files for.
+            repository (str): The repository from which to fetch files, defaults to "deposit".
+        
+        Returns:
+            List[WwPDBResourceURI]: A list of file URIs.
+        """
+        # using ssh to list files in the remote archive
+        remote_path = self.remote_pi.getDirPath(dataSetId=dep_id, fileSource=repository)
+        if self.remote_archive.host == "localhost":
+            # If the remote archive is localhost, we can directly list files
+            file_logger.debug("Listing files locally in %s", remote_path)
+            return [WwPDBResourceURI(dep_id=dep_id, file_name=file) for file in os.listdir(remote_path)]
+        
+        rsync_command = ["rsync", "-arvzL", "--list-only"]
+        if self.remote_archive.key_file:
+            rsync_command.append("-e")
+            rsync_command.append(f"ssh -i {self.remote_archive.key_file}")
+        rsync_command.append(f"{self.remote_archive.user}@{self.remote_archive.host}:{remote_path}/")
+
+        file_logger.debug("Running command %s", ' '.join(rsync_command))
+        result = subprocess.run(rsync_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            file_logger.error("Failed to list files: %s", result.stderr.strip())
+            return []
+        
+        file_list = []
+        for line in result.stdout.splitlines():
+            if line.strip() and not line.startswith('total'):
+                parts = line.split()
+                file_name = parts[-1]
+                file_uri = WwPDBResourceURI(dep_id=dep_id, file_name=file_name)
+                file_list.append(file_uri)
+        
+        file_logger.info("Found %d files for deposition %s in repository %s", len(file_list), dep_id, repository)
+        return file_list
+
     def fetch_file(self, file_uri: WwPDBResourceURI):
         """ Fetches a file from the remote archive and stores it in the local tempdep directory."""
         filesystem = FilesystemBackend(self.remote_pi, Config.CONTENT_TYPE_DICT, Config.FORMAT_DICT)

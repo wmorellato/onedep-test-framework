@@ -53,7 +53,7 @@ class Config:
                 version=rule_data["version"],
                 categories=rule_data.get("categories", [])
             )
-        
+
         if "test_set" not in data:
             raise ValueError("Test set is missing in the configuration file.")
 

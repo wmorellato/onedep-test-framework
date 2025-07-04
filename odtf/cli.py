@@ -95,6 +95,12 @@ def parse_voxel_values(filepath):
     return contour_level, pixel_spacing
 
 
+def get_cookie_signer(salt="django.core.signing.get_cookie_signer"):
+    Signer = import_string(settings.SIGNING_BACKEND)
+    key = force_bytes(settings.SECRET_KEY)  # SECRET_KEY may be str or bytes.
+    return Signer(b"django.http.cookies" + key, salt=salt)
+
+
 class StatusManager:
     """
     Minimal thread-safety with your exact logic preserved.
@@ -218,12 +224,63 @@ def monitor_processing(test_entry: TestEntry, status_manager: StatusManager, tim
         time.sleep(sleep_time)
 
 
-def submit_deposition(test_entry: TestEntry, config: Config, status_manager: StatusManager):
-    def get_cookie_signer(salt="django.core.signing.get_cookie_signer"):
-        Signer = import_string(settings.SIGNING_BACKEND)
-        key = force_bytes(settings.SECRET_KEY)  # SECRET_KEY may be str or bytes.
-        return Signer(b"django.http.cookies" + key, salt=salt)
+def unlock_deposition(dep_id: str, config: Config):
+    """Unlock a deposition by sending a POST request to the unlock endpoint."""
+    session = requests.Session()
+    session.verify = False
+    orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
 
+    response = session.get(
+        url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", dep_id, "view"),
+        cookies={"depositor-orcid": orcid_cookie},
+    )
+    response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to unlock deposition {dep_id}: {response.text}")
+
+
+def _upload_all_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
+    # this is a separate function just so the `upload_task` doesn't get too complicated
+    arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
+    uploaded_files = []
+    type_dict = {}
+    contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
+
+    for f in task.files:
+        content_type, file_format = f.split(".")
+        content_type = f"{content_type}-upload"
+        if content_type not in type_dict:
+            type_dict[content_type] = 1
+        else:
+            type_dict[content_type] += 1
+
+        file_uri = WwPDBResourceURI.for_file(repository=source_repository, dep_id=test_entry.dep_id, content_type=content_type, format=file_format, part_number=type_dict[content_type], version="latest")
+
+        try:
+            filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
+            filepath = str(filesystem.locate(file_uri))
+            status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}` from {filepath}")
+            file = api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
+            uploaded_files.append(file)
+
+            if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
+                if contour_level:
+                    status_manager.update_status(test_entry, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
+                    api.update_metadata(test_entry.copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
+                else:
+                    raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
+        except ValueError as e:
+            status_manager.update_status(test_entry, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
+            raise
+        except Exception as e:
+            status_manager.update_status(test_entry, status="failed", message=f"Error uploading {content_type} {file_format}")
+            raise
+
+    return uploaded_files
+
+
+def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusManager):
     test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
 
     if test_entry.copy_dep_id:
@@ -278,49 +335,7 @@ def submit_deposition(test_entry: TestEntry, config: Config, status_manager: Sta
     file_logger.info("Submit response: %s", response.text)
 
 
-def upload_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager):
-    # getting all files with the 'upload' milestone doesn't work as I've seen
-    # some depositions with multiple versions of -upload type
-    arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
-    uploaded_files = []
-    type_dict = {}
-    contour_level, pixel_spacing = parse_voxel_values(os.path.join(arch_pickles, "em_map_upload.pkl"))
-
-    for f in task.files:
-        content_type, file_format = f.split(".")
-        content_type = f"{content_type}-upload"
-        if content_type not in type_dict:
-            type_dict[content_type] = 1
-        else:
-            type_dict[content_type] += 1
-
-        file_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=file_format, part_number=type_dict[content_type], version="latest")
-
-        status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}`")
-
-        try:
-            filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
-            filepath = str(filesystem.locate(file_uri))
-            file = api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
-            uploaded_files.append(file)
-
-            if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
-                if contour_level:
-                    status_manager.update_status(test_entry, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
-                    api.update_metadata(test_entry.copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
-                else:
-                    raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
-        except ValueError as e:
-            status_manager.update_status(test_entry, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
-            raise
-        except:
-            status_manager.update_status(test_entry, status="failed", message=f"Error uploading {content_type} {file_format}")
-            raise
-
-    return uploaded_files
-
-
-def compare_files(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     overall_success = True
 
     for cr in task.rules:
@@ -366,22 +381,10 @@ def compare_files(test_entry: TestEntry, task: Task, config: Config, status_mana
     status_manager.track_task_result(test_entry, TaskType.COMPARE_FILES, overall_success)
 
 
-def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusManager):
-    remote = config.get_remote_archive()
-    local = LocalArchive(site_id=getSiteId())
-    fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
-
-    status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
+def create_dep_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     try:
-        fetcher.fetch_repository(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT.value)
-    except Exception as e:
-        raise Exception("Error fetching files from archive") from e
-
-
-def create_and_process(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
-    try:
-        exp_type = status_manager.get_status(test_entry).exp_type # feels hackish
-        exp_subtype = status_manager.get_status(test_entry).exp_subtype # feels hackish
+        exp_type = status_manager.get_status(test_entry).exp_type # hackish
+        exp_subtype = status_manager.get_status(test_entry).exp_subtype # hackish
 
         status_manager.update_status(test_entry, status="working", message="Creating test deposition")
         try:
@@ -389,9 +392,24 @@ def create_and_process(test_entry: TestEntry, task: Task, config: Config, status
             test_entry.copy_dep_id = copy_dep.dep_id
         except Exception as e:
             raise Exception(f"Error creating test deposition: {str(e)}") from e
+    except Exception as e:
+        status_manager.update_status(test_entry, status="failed", message=str(e))
+        status_manager.track_task_result(test_entry, TaskType.CREATE, False, str(e))
+        raise
 
-        status_manager.update_status(test_entry, copy_dep_id=copy_dep.dep_id)
-        upload_files(test_entry=test_entry, task=task, status_manager=status_manager)
+
+def upload_task(test_entry: TestEntry, task: UploadTask, config: Config, status_manager: StatusManager):
+    source_repository = "tempdep"
+
+    try:
+        if not test_entry.copy_dep_id:
+            # it's a standalone test, so we use the original dep_id
+            test_entry.copy_dep_id = test_entry.dep_id
+            source_repository = "deposit-ui"
+            unlock_deposition(test_entry.copy_dep_id, config)
+
+        status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id)
+        _upload_all_files(test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
         api.process(test_entry.copy_dep_id, **copy_elements)
@@ -404,8 +422,20 @@ def create_and_process(test_entry: TestEntry, task: Task, config: Config, status
         raise
 
 
+def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    remote = config.get_remote_archive()
+    local = LocalArchive(site_id=getSiteId())
+    fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
+
+    status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id, message="Fetching files from archive")
+    try:
+        fetcher.fetch_repository(test_entry.dep_id, repository=ArchiveRepository.DEPOSIT.value)
+    except Exception as e:
+        raise Exception("Error fetching files from archive") from e
+
+
 def get_entry_info(test_entry: TestEntry, config: Config, status_manager: StatusManager):
-    """Part of the main testing pipeline, hence the status_manager here. Only Jesus can judge me
+    """Part of the main testing pipeline, hence the status_manager here.
     This should be using the API.
     """
     prod_ci = ConfigInfo(siteId=config.remote_archive.site_id)
@@ -505,12 +535,14 @@ def run_entry_tasks(entry, config, status_manager):
 
     for task in entry.tasks:
         try:
-            if task.type == TaskType.UPLOAD:
-                create_and_process(entry, task, config, status_manager)
+            if task.type == TaskType.CREATE:
+                create_dep_task(entry, task, config, status_manager)
+            elif task.type == TaskType.UPLOAD:
+                upload_task(entry, task, config, status_manager)
             elif task.type == TaskType.COMPARE_FILES:
-                compare_files(entry, task, config, status_manager)
+                compare_files_task(entry, task, config, status_manager)
             elif task.type == TaskType.SUBMIT:
-                submit_deposition(entry, config, status_manager)
+                submit_task(entry, config, status_manager)
             else:
                 file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
         except Exception as e:
