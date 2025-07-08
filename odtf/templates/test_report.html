@@ -96,6 +96,10 @@
             color: #6c757d;
             margin-top: 0.25rem;
             font-style: italic;
+            max-width: 100%;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
     </style>
 </head>
@@ -239,8 +243,10 @@
                                             <span class="badge task-type-badge bg-light text-dark">{{ task.type.value }}</span>
                                         </div>
                                         
-                                        {% if task.error_message %}
-                                        <pre class="error-message">{{ task.error_message }}</pre>
+                                        {% if task.error_message and task.error_message[0] in ('{', '[') %}
+                                        <pre class="error-message">{{ task.error_message | escape}}</pre>
+                                        {% elif task.error_message %}
+                                        <div class="error-message">{{ task.error_message}}</div>
                                         {% endif %}
 
                                         {% if task.execution_time %}

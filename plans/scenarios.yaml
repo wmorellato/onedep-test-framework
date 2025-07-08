@@ -93,4 +93,4 @@ test_set:
           - mapfix-header-report.json
       - submit
       - compare_repos:
-        source: wwpdb://archive/:copy:/
+        source: wwpdb://deposit-ui/:copy:/
