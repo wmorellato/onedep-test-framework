@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import shutil
+import pprint
 from typing import List
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -335,6 +336,46 @@ def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusMan
     file_logger.info("Submit response: %s", response.text)
 
 
+def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+    overall_success = True
+
+    try:
+        source_repo = WwPDBResourceURI(task.source)
+        if source_repo.dep_id == ":copy:":
+            if not test_entry.copy_dep_id:
+                raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
+            source_repo.dep_id = test_entry.copy_dep_id
+
+        test_repo = WwPDBResourceURI.for_directory(repository=source_repo.repository, dep_id=test_entry.dep_id)
+        if not filesystem.exists(test_repo):
+            error_msg = f"Repository {test_repo} not found in local archive."
+            status_manager.track_comparison_result(test_entry, "repository", False, error_msg)
+            raise FileNotFoundError(error_msg)
+
+        status_manager.update_status(test_entry, message=f"Comparing {test_repo} with {source_repo}")
+
+        comparer = comparer_factory("repository", str(filesystem.locate(test_repo)), str(filesystem.locate(source_repo)))
+        diffs = comparer.get_report()
+
+        error_msg = None if diffs else "Comparison failed for repository files"
+        status_manager.track_comparison_result(test_entry, "repository", not bool(diffs), pprint.pformat(diffs, indent=2))
+        
+        if diffs:
+            overall_success = False
+            status_manager.update_status(test_entry, status="warning", message="Repository files differ")
+        else:
+            status_manager.update_status(test_entry, message="Repository files are the same")
+
+    except Exception as e:
+        overall_success = False
+        error_msg = f"Error during repository comparison: {str(e)}"
+        status_manager.track_comparison_result(test_entry, "repository", False, error_msg)
+        status_manager.update_status(test_entry, status="failed", message=error_msg)
+        raise
+    finally:
+        status_manager.track_task_result(test_entry, TaskType.COMPARE_REPOS, overall_success)
+
+
 def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     overall_success = True
 
@@ -365,7 +406,7 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
             diffs = comparer.get_report()
 
             error_msg = None if diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
-            status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), str(diffs))
+            status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), pprint.pformat(diffs, indent=4))
             
             if diffs:
                 overall_success = False
@@ -448,9 +489,8 @@ def get_entry_info(test_entry: TestEntry, config: Config, status_manager: Status
     }
 
     connection = MySQLdb.connect(**prod_db)
-    status_manager.update_status(test_entry, status="working", message="Getting entry info")
-
     try:
+        status_manager.update_status(test_entry, status="working", message="Getting entry info")
         with connection.cursor() as cursor:
             sql = "SELECT pdb_id, emdb_id, bmrb_id, exp_method FROM deposition WHERE dep_set_id = '%s'" % test_entry.dep_id.upper()
             cursor.execute(sql)
@@ -541,6 +581,8 @@ def run_entry_tasks(entry, config, status_manager):
                 upload_task(entry, task, config, status_manager)
             elif task.type == TaskType.COMPARE_FILES:
                 compare_files_task(entry, task, config, status_manager)
+            elif task.type == TaskType.COMPARE_REPOS:
+                compare_repos_task(entry, task, config, status_manager)
             elif task.type == TaskType.SUBMIT:
                 submit_task(entry, config, status_manager)
             else:

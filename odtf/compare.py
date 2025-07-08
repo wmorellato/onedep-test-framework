@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import hashlib
@@ -120,6 +121,27 @@ class RepositoryComparer:
         Placeholder method for future implementation.
         """
         raise NotImplementedError("Repository comparison is not implemented yet.")
+    
+    def get_report(self, compare_by="filename") -> str:
+        """
+        Get a report of the repository comparison.
+        Placeholder method for future implementation.
+        """
+        files1 = {re.sub("D_\d+", "", f): os.path.join(self.repo1, f) for f in os.listdir(self.repo1) if os.path.isfile(os.path.join(self.repo1, f))}
+        files2 = {re.sub("D_\d+", "", f): os.path.join(self.repo2, f) for f in os.listdir(self.repo2) if os.path.isfile(os.path.join(self.repo2, f))}
+
+        if compare_by == "filename":
+            unique_to_dir1 = set(files1.keys()) - set(files2.keys())
+            unique_to_dir2 = set(files2.keys()) - set(files1.keys())
+        elif compare_by == "hash":
+            raise NotImplementedError("Hash comparison for repositories is not implemented yet.")
+        else:
+            raise ValueError("Invalid comparison method. Use 'filename', 'timestamp', or 'hash'.")
+
+        return {
+            os.path.basename(self.repo1): list(unique_to_dir1),
+            os.path.basename(self.repo2): list(unique_to_dir2)
+        }
 
 
 def comparer_factory(comparison_type: str, file1: str, file2: str) -> FileComparer:
@@ -132,5 +154,7 @@ def comparer_factory(comparison_type: str, file1: str, file2: str) -> FileCompar
         return CIFComparer(file1, file2)
     elif comparison_type == "jsondiff":
         return JSONComparer(file1, file2)
+    elif comparison_type == "repository":
+        return RepositoryComparer(file1, file2) # resource1, resource2
     else:
         raise ValueError(f"Unknown comparison type: {comparison_type}")

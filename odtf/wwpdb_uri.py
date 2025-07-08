@@ -268,10 +268,13 @@ class FilesystemBackend(StorageBackend):
             ))
         else:
             if uri.dep_id:
-                return self.path_info.getDirPath(
+                path = self.path_info.getDirPath(
                     dataSetId=uri.dep_id,
                     fileSource=uri.repository
                 )
+
+                if path:
+                    return Path(path)
             else:
                 path = self.path_info.getDirPath(
                     dataSetId='D_000001',

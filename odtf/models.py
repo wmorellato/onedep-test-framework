@@ -100,6 +100,12 @@ class SubmitTask(Task):
 
 
 @dataclass
+class CreateTask(Task):
+    def __init__(self):
+        super().__init__(type=TaskType.CREATE)
+
+
+@dataclass
 class CompareRule:
     name: str
     method: str
@@ -124,7 +130,7 @@ class CompareFilesTask(Task):
 class CompareReposTask(Task):
     source: Optional[str] = None
 
-    def __init__(self, source: Optional[str]):
+    def __init__(self, source: str):
         super().__init__(type=TaskType.COMPARE_REPOS)
         self.source = source
 

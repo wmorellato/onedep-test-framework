@@ -1,7 +1,7 @@
 import yaml
 from typing import List, Dict, Union
 
-from odtf.models import RemoteArchive, CompareRule, TestEntry, Task, UploadTask, SubmitTask, CompareFilesTask
+from odtf.models import RemoteArchive, CompareRule, TestEntry, Task, UploadTask, CreateTask, SubmitTask, CompareFilesTask, CompareReposTask
 
 from wwpdb.utils.config.ConfigInfoData import ConfigInfoData
 
@@ -12,6 +12,8 @@ def parse_task(task_data: Union[str, Dict]) -> Task:
     if isinstance(task_data, str):
         if task_data == "submit":
             return SubmitTask()
+        elif task_data == "create":
+            return CreateTask()
     elif isinstance(task_data, dict):
         if "compare_files" in task_data:
             return CompareFilesTask(
@@ -21,6 +23,10 @@ def parse_task(task_data: Union[str, Dict]) -> Task:
         elif "upload" in task_data:
             return UploadTask(
                 files=task_data.get("files")
+            )
+        elif "compare_repos" in task_data:
+            return CompareReposTask(
+                source=task_data.get("source"),
             )
     raise ValueError(f"Unknown task type: {task_data}")
 

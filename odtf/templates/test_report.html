@@ -240,7 +240,7 @@
                                         </div>
                                         
                                         {% if task.error_message %}
-                                        <div class="error-message">{{ task.error_message }}</div>
+                                        <pre class="error-message">{{ task.error_message }}</pre>
                                         {% endif %}
 
                                         {% if task.execution_time %}
@@ -270,7 +270,7 @@
                                                         <small class="text-muted ms-2">({{ rule.method }})</small>
                                                         {% endif %}
                                                         {% if rule.error_message %}
-                                                        <div class="error-message">{{ rule.error_message }}</div>
+                                                        <pre class="error-message">{{ rule.error_message }}</pre>
                                                         {% endif %}
                                                     </div>
                                                 </div>

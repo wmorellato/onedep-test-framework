@@ -14,7 +14,7 @@ from typing import List, Dict, Optional
 from jinja2 import Environment, FileSystemLoader
 
 from odtf.config import Config
-from odtf.models import TestEntry, TestReport, TaskStatus, CompareFilesTask
+from odtf.models import TestEntry, TestReport, TaskStatus, CompareFilesTask, CompareReposTask
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,29 @@ def update_compare_files_task_from_results(task: CompareFilesTask,
             rule.status = TaskStatus.PENDING
 
 
+def update_compare_repos_task_from_results(task: CompareReposTask, 
+                                         comparison_results: Dict[str, Dict]) -> None:
+    """
+    Update CompareReposTask rules based on comparison results
+    
+    Args:
+        task: CompareReposTask to update
+        comparison_results: Dictionary mapping dep_id to results
+                          Format: {dep_id: {'success': bool, 'error': str}}
+    """
+    if "repository" in comparison_results:
+        result = comparison_results["repository"] # if I make more than one comparison, this will break
+        if result.get('success', False):
+            task.status = TaskStatus.SUCCESS
+            task.error_message = None
+        else:
+            task.status = TaskStatus.FAILED
+            task.error_message = result.get('error', 'Repository comparison failed')
+    else:
+        # Dep_id wasn't processed - mark as pending
+        task.status = TaskStatus.PENDING
+
+
 # Example usage and integration helpers
 class TestReportIntegration:
     """
@@ -320,6 +343,11 @@ class TestReportIntegration:
                         if isinstance(task, CompareFilesTask):
                             update_compare_files_task_from_results(
                                 task, 
+                                self.comparison_results[entry.dep_id]
+                            )
+                        elif isinstance(task, CompareReposTask):
+                            update_compare_repos_task_from_results(
+                                task,
                                 self.comparison_results[entry.dep_id]
                             )
                 
