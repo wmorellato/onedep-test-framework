@@ -62,10 +62,6 @@ for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "
     logger.propagate = True
 
 
-ORCID = "0000-0002-5109-8728"
-api = None
-
-
 def parse_voxel_values(filepath):
     """
     Parse a pickle file and extract the first contour_level and pixel_spacing values.
@@ -159,7 +155,7 @@ class StatusManager:
             )
 
 
-def create_deposition(orcid: str, country: Country, etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
+def create_deposition(api, orcid: str, country: Country, etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
     """NOTE: if this code ever moves to a separate package, the deposition
     will have to be created using a proper HTTP request.
     """
@@ -186,7 +182,7 @@ def create_deposition(orcid: str, country: Country, etype: ExperimentType, email
     return deposition
 
 
-def monitor_processing(test_entry: TestEntry, status_manager: StatusManager, timeout_minutes=30):
+def monitor_processing(api, test_entry: TestEntry, status_manager: StatusManager, timeout_minutes=30):
     """Monitor processing with exponential backoff and timeout protection"""
     start_time = time.time()
     status = "started"
@@ -241,7 +237,7 @@ def unlock_deposition(dep_id: str, config: Config):
         raise Exception(f"Failed to unlock deposition {dep_id}: {response.text}")
 
 
-def _upload_all_files(test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
+def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
     # this is a separate function just so the `upload_task` doesn't get too complicated
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     uploaded_files = []
@@ -422,14 +418,14 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
     status_manager.track_task_result(test_entry, TaskType.COMPARE_FILES, overall_success)
 
 
-def create_dep_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+def create_dep_task(api, test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
     try:
         exp_type = status_manager.get_status(test_entry).exp_type # hackish
         exp_subtype = status_manager.get_status(test_entry).exp_subtype # hackish
 
         status_manager.update_status(test_entry, status="working", message="Creating test deposition")
         try:
-            copy_dep = create_deposition(orcid=config.api.get("orcid"), country=Country(config.api.get("country")), etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+            copy_dep = create_deposition(api=api, orcid=config.api.get("orcid"), country=Country(config.api.get("country")), etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
             test_entry.copy_dep_id = copy_dep.dep_id
         except Exception as e:
             raise Exception(f"Error creating test deposition: {str(e)}") from e
@@ -439,7 +435,7 @@ def create_dep_task(test_entry: TestEntry, task: Task, config: Config, status_ma
         raise
 
 
-def upload_task(test_entry: TestEntry, task: UploadTask, config: Config, status_manager: StatusManager):
+def upload_task(api, test_entry: TestEntry, task: UploadTask, config: Config, status_manager: StatusManager):
     source_repository = "tempdep"
 
     try:
@@ -450,11 +446,11 @@ def upload_task(test_entry: TestEntry, task: UploadTask, config: Config, status_
             unlock_deposition(test_entry.copy_dep_id, config)
 
         status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id)
-        _upload_all_files(test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
+        _upload_all_files(api=api, test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
         api.process(test_entry.copy_dep_id, **copy_elements)
-        monitor_processing(test_entry, status_manager)
+        monitor_processing(api, test_entry, status_manager)
 
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
@@ -569,6 +565,11 @@ def generate_table(status_manager):
 def run_entry_tasks(entry, config, status_manager):
     """Run all tasks for a single entry sequentially."""
     get_entry_info(entry, config, status_manager)
+    api = DepositApi(
+       api_key=create_token(config.api.get("orcid"), expiration_days=7), 
+        hostname=config.api.get("base_url"), 
+        ssl_verify=False
+    )
 
     if not entry.skip_fetch:
         fetch_files(entry, config, status_manager)
@@ -576,9 +577,9 @@ def run_entry_tasks(entry, config, status_manager):
     for task in entry.tasks:
         try:
             if task.type == TaskType.CREATE:
-                create_dep_task(entry, task, config, status_manager)
+                create_dep_task(api, entry, task, config, status_manager)
             elif task.type == TaskType.UPLOAD:
-                upload_task(entry, task, config, status_manager)
+                upload_task(api, entry, task, config, status_manager)
             elif task.type == TaskType.COMPARE_FILES:
                 compare_files_task(entry, task, config, status_manager)
             elif task.type == TaskType.COMPARE_REPOS:
