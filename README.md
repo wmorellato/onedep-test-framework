@@ -24,7 +24,7 @@ On your test server, run `odtf /path/to/your/plan.yaml`. If your test set is lon
 
 This tool is centered around testing plans (YAML files) that define a list of depositions to use as a test.
 
-For each deposition listed, you can define tasks to be performed on it. The most common test case is to create a *new* deposition based on a previous one (usually from the production archive), uploading the same files originally uploaded and compare the processed files with the original ones. Another test case is just to run a task on an *existing* deposition in your test installation (e.g. reupload, resubmit it etc).
+For each deposition listed, you can define tasks to be performed on it. The most common test case is to create a *new* deposition based on a previous one (usually from the production archive), uploading the same files originally uploaded and comparing the processed files with the original ones. Another test case is just to run a task on an *existing* deposition in your test installation (e.g. reupload, resubmit it etc).
 
 Take the very short example below.
 
@@ -189,13 +189,7 @@ D_8233000141:
 
 - `submit`: Indicates submission tasks.
 
-### Usage
-
-This file is used to configure and automate deposition workflows, including file uploads, comparisons, and submissions. Ensure all paths, rules, and tasks are correctly defined for successful execution.
-
-## Example testing plans
-
-A very short example:
+## A short example plan
 
 ```yaml
 api:
@@ -220,6 +214,7 @@ compare_rules:
 test_set:
   D_1292133558: # em single particle
     tasks:
+      - create
       - upload:
         files: # list here all required files for this dep. If the same content-type.format is used, it will search for additional partitions
           - model.pdb
