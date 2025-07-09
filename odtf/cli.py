@@ -225,16 +225,19 @@ def unlock_deposition(dep_id: str, config: Config):
     """Unlock a deposition by sending a POST request to the unlock endpoint."""
     session = requests.Session()
     session.verify = False
-    orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
+    try:
+        orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
 
-    response = session.get(
-        url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", dep_id, "view"),
-        cookies={"depositor-orcid": orcid_cookie},
-    )
-    response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+        response = session.get(
+            url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", dep_id, "view"),
+            cookies={"depositor-orcid": orcid_cookie},
+        )
+        response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
 
-    if response.status_code != 200:
-        raise Exception(f"Failed to unlock deposition {dep_id}: {response.text}")
+        if response.status_code != 200:
+            raise Exception(f"Failed to unlock deposition {dep_id}: {response.text}")
+    finally:
+        session.close()
 
 
 def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
@@ -312,24 +315,26 @@ def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusMan
     # get the csrftoken from an arbitrary request
     session = requests.Session()
     session.verify = False
+    try:
+        response = session.get(
+            url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", test_entry.copy_dep_id, "view"),
+            cookies={"depositor-orcid": orcid_cookie},
+        )
+        csrftoken = response.cookies.get("csrftoken")
 
-    response = session.get(
-        url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", test_entry.copy_dep_id, "view"),
-        cookies={"depositor-orcid": orcid_cookie},
-    )
-    csrftoken = response.cookies.get("csrftoken")
+        response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
 
-    response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+        status_manager.update_status(test_entry, message="Submitting deposition")
+        response = session.post(
+            url=os.path.join(config.api.get("base_url"), "submitRequest"),
+            json={},
+            cookies={"depositor-orcid": orcid_cookie},
+            headers={"x-csrftoken": csrftoken, "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "referer": config.api.get("base_url")}
+        )
 
-    status_manager.update_status(test_entry, message="Submitting deposition")
-    response = session.post(
-        url=os.path.join(config.api.get("base_url"), "submitRequest"),
-        json={},
-        cookies={"depositor-orcid": orcid_cookie},
-        headers={"x-csrftoken": csrftoken, "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "referer": config.api.get("base_url")}
-    )
-
-    file_logger.info("Submit response: %s", response.text)
+        file_logger.info("Submit response: %s", response.text)
+    finally:
+        session.close()
 
 
 def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
