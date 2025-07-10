@@ -112,22 +112,6 @@ test_set:
           - model-issues-report.json
           - structure-factor-report.json
       - submit
-  D_1290025479: # fiber
-    tasks:
-      - create # must ALWAYS come before upload. Otherwise, weird things happen
-      - upload:
-        files:
-          - model.pdbx
-          - structure-factors.mtz
-      - compare_files:
-        source: wwpdb://deposit-ui/:copy:/
-        rules:
-          - model.pdbx
-          - structure-factors.pdbx
-          - model-aux.pdbx
-          - model-issues-report.json
-          - structure-factor-report.json
-      - submit
   D_1292109328: # ec
     tasks:
       - create # must ALWAYS come before upload. Otherwise, weird things happen
