@@ -60,7 +60,6 @@ test_set:
         source: wwpdb://deposit-ui/:copy:/
         rules:
           - model.pdbx
-          - model-upload.pdbx
           - model-upload-convert.pdbx
           - mapfix-header-report.json
       - submit
