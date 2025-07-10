@@ -1,6 +1,8 @@
 import os
 import re
 import django
+import asyncio
+import aiohttp
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "wwpdb.apps.deposit.settings"
 django.setup()
@@ -59,6 +61,11 @@ filesystem = FilesystemBackend(pi, content_type_config=Config.CONTENT_TYPE_DICT,
 for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo", "odtf.report"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.CRITICAL)
+    logger.propagate = True
+
+for l in ["asyncio"]:
+    logger = logging.getLogger(l)
+    logger.setLevel(logging.WARNING)
     logger.propagate = True
 
 
@@ -182,62 +189,132 @@ def create_deposition(api, orcid: str, country: Country, etype: ExperimentType, 
     return deposition
 
 
-def monitor_processing(api, test_entry: TestEntry, status_manager: StatusManager, timeout_minutes=30):
-    """Monitor processing with exponential backoff and timeout protection"""
+async def monitor_processing(test_entry: TestEntry, config: Config, status_manager: StatusManager, timeout_minutes=30):
+    """Monitor processing using direct HTTP calls instead of DepositApi - more efficient async version"""
     start_time = time.time()
     status = "started"
     sleep_time = 5
     max_sleep = 30
     
-    file_logger.info(f"Starting monitor_processing for {test_entry.dep_id}")
+    file_logger.info(f"Starting HTTP-based async monitor_processing for {test_entry.dep_id}")
+    base_url = config.api.get("base_url")
+    
+    timeout = aiohttp.ClientTimeout(total=30)
+    connector = aiohttp.TCPConnector(
+        limit=100,
+        limit_per_host=10,
+        ttl_dns_cache=300,
+        use_dns_cache=True,
+    )
+    
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        connector_owner=False
+    ) as session:
+        try:
+            while status in ("running", "started", "submit"):
+                if time.time() - start_time > timeout_minutes * 60:
+                    raise Exception(f"Processing timeout after {timeout_minutes} minutes for {test_entry.dep_id}")
+                
+                file_logger.debug(f"Checking status for {test_entry.copy_dep_id}, current sleep_time: {sleep_time}")
+                
+                try:
+                    status_url = os.path.join(base_url, "api", "v1", "depositions", test_entry.copy_dep_id, "status")
+                    async with session.get(
+                        url=status_url,
+                        headers = {
+                            'Authorization': f"Bearer {create_token(config.api.get('orcid'), expiration_days=7)}"
+                        },
+                        ssl=False
+                    ) as response:
+                        if response.status != 200:
+                            raise Exception(f"Status check failed: {response.status} - {await response.text()}")
+                        
+                        response_data = await response.json()
+                        
+                        if "status" in response_data:
+                            status = response_data["status"]
+                            details = response_data.get("details", "")
+                        else:
+                            status = response_data.get("status", "error")
+                            details = response_data.get("message", str(response_data))
+                        
+                except asyncio.TimeoutError:
+                    file_logger.error(f"Timeout checking status for {test_entry.copy_dep_id}")
+                    await asyncio.sleep(sleep_time)
+                    sleep_time = min(sleep_time * 1.5, max_sleep)
+                    continue
+                except Exception as e:
+                    file_logger.error(f"HTTP status check failed for {test_entry.copy_dep_id}: {e}")
+                    await asyncio.sleep(sleep_time)
+                    sleep_time = min(sleep_time * 1.5, max_sleep)
+                    continue
 
-    while status in ("running", "started", "submit"):
-        if time.time() - start_time > timeout_minutes * 60:
-            raise Exception(f"Processing timeout after {timeout_minutes} minutes for {test_entry.dep_id}")
-        
-        file_logger.debug(f"Checking status for {test_entry.copy_dep_id}, current sleep_time: {sleep_time}")
-        response = api.get_status(test_entry.copy_dep_id)
+                current_status_message = status_manager.get_status(test_entry).message
+                if details == current_status_message:
+                    file_logger.debug(f"No status change for {test_entry.dep_id}, sleeping {sleep_time}s")
+                    await asyncio.sleep(sleep_time)
+                    sleep_time = min(sleep_time * 1.2, max_sleep)
+                    continue
 
-        if isinstance(response, DepositStatus):
-            if response.details == status_manager.get_status(test_entry).message:
-                file_logger.debug(f"No status change for {test_entry.dep_id}, sleeping {sleep_time}s")
-                time.sleep(sleep_time)
-                sleep_time = min(sleep_time * 1.2, max_sleep)  # Exponential backoff
-                continue
+                sleep_time = 5
+                status_manager.update_status(test_entry, status="working", message=details)
+                file_logger.info(f"Status update for {test_entry.dep_id}: {status} - {details}")
 
-            # Status changed, reset sleep time
-            sleep_time = 5
-            status_manager.update_status(test_entry, status="working", message=f"{response.details}")
-            status = response.status
-            file_logger.info(f"Status update for {test_entry.dep_id}: {status} - {response.details}")
+                if status == "error":
+                    raise Exception(details)
 
-            if status == "error":
-                raise Exception(response.details)
-        elif isinstance(response, DepositError):
-            raise Exception(response.message)
-        else:
-            raise Exception(f"Unknown response type {type(response)}")
-
-        time.sleep(sleep_time)
+                await asyncio.sleep(sleep_time)
+                
+        except Exception as e:
+            raise Exception(f"Error monitoring processing for {test_entry.dep_id}: {str(e)}") from e
+        finally:
+            await connector.close()
 
 
-def unlock_deposition(dep_id: str, config: Config):
+async def unlock_deposition(dep_id: str, config: Config):
     """Unlock a deposition by sending a POST request to the unlock endpoint."""
-    session = requests.Session()
-    session.verify = False
-    try:
-        orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
+    orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
 
-        response = session.get(
-            url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", dep_id, "view"),
-            cookies={"depositor-orcid": orcid_cookie},
-        )
-        response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+    timeout = aiohttp.ClientTimeout(total=30)
+    connector = aiohttp.TCPConnector(
+        limit=100,
+        limit_per_host=10,
+        ttl_dns_cache=300,
+        use_dns_cache=True,
+    )
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to unlock deposition {dep_id}: {response.text}")
-    finally:
-        session.close()
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        connector_owner=False
+    ) as session:
+        try:
+            view_url = os.path.join(config.api.get("base_url"), "api", "v1", "depositions", dep_id, "view")
+            async with session.get(
+                url=view_url,
+                cookies={"depositor-orcid": orcid_cookie},
+                ssl=False
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to get deposition view {dep_id}: {response.status} - {await response.text()}")
+
+            unlock_url = os.path.join(config.api.get("base_url"), "stage", "unlock")
+            async with session.post(
+                url=unlock_url,
+                cookies={"depositor-orcid": orcid_cookie},
+                ssl=False
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to unlock deposition {dep_id}: {response.status} - {await response.text()}")
+                    
+        except asyncio.TimeoutError:
+            raise Exception(f"Timeout while unlocking deposition {dep_id}")
+        except Exception as e:
+            raise Exception(f"Error unlocking deposition {dep_id}: {str(e)}") from e
+        finally:
+            await connector.close()
 
 
 def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
@@ -280,7 +357,7 @@ def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manag
     return uploaded_files
 
 
-def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+async def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusManager):
     test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
 
     if test_entry.copy_dep_id:
@@ -313,28 +390,77 @@ def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusMan
     orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
 
     # get the csrftoken from an arbitrary request
-    session = requests.Session()
-    session.verify = False
-    try:
-        response = session.get(
-            url=os.path.join(config.api.get("base_url"), "api", "v1", "depositions", test_entry.copy_dep_id, "view"),
-            cookies={"depositor-orcid": orcid_cookie},
-        )
-        csrftoken = response.cookies.get("csrftoken")
+    base_url = config.api.get("base_url")
+    timeout = aiohttp.ClientTimeout(total=60)
+    connector = aiohttp.TCPConnector(
+        limit=100,
+        limit_per_host=10,
+        ttl_dns_cache=300,
+        use_dns_cache=True,
+    )
 
-        response = session.post(url=os.path.join(config.api.get("base_url"), "stage", "unlock"))
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        connector_owner=False
+    ) as session:
+        try:
+            # get the view to obtain csrftoken
+            view_url = os.path.join(base_url, "api", "v1", "depositions", test_entry.copy_dep_id, "view")
+            async with session.get(
+                url=view_url,
+                cookies={"depositor-orcid": orcid_cookie},
+                ssl=False
+            ) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to get deposition view {test_entry.copy_dep_id}: {response.status} - {await response.text()}")
+                
+                # extract CSRF token from response cookies
+                csrftoken = None
+                if "csrftoken" in response.cookies:
+                    csrftoken = response.cookies["csrftoken"].value
+                else:
+                    raise Exception("CSRF token not found in response cookies")
+            
+            # unlock stage
+            unlock_url = os.path.join(base_url, "stage", "unlock")
+            async with session.post(
+                url=unlock_url,
+                cookies={"depositor-orcid": orcid_cookie, "csrftoken": csrftoken},
+                ssl=False
+            ) as response:
+                if response.status != 200:
+                    file_logger.warning(f"Unlock request returned {response.status}, continuing anyway")
+            
+            # submit the deposition
+            status_manager.update_status(test_entry, message="Submitting deposition")
+            submit_url = os.path.join(base_url, "submitRequest")
+            
+            headers = {
+                "x-csrftoken": csrftoken,
+                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "referer": base_url
+            }
+            
+            async with session.post(
+                url=submit_url,
+                json={},
+                cookies={"depositor-orcid": orcid_cookie, "csrftoken": csrftoken},
+                headers=headers,
+                ssl=False
+            ) as response:
+                response_text = await response.text()
+                file_logger.info("Submit response: %s", response_text)
+                
+                if response.status != 200:
+                    raise Exception(f"Failed to submit deposition {test_entry.copy_dep_id}: {response.status} - {response_text}")
 
-        status_manager.update_status(test_entry, message="Submitting deposition")
-        response = session.post(
-            url=os.path.join(config.api.get("base_url"), "submitRequest"),
-            json={},
-            cookies={"depositor-orcid": orcid_cookie},
-            headers={"x-csrftoken": csrftoken, "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "referer": config.api.get("base_url")}
-        )
-
-        file_logger.info("Submit response: %s", response.text)
-    finally:
-        session.close()
+        except asyncio.TimeoutError:
+            raise Exception(f"Timeout while submitting deposition {test_entry.copy_dep_id}")
+        except Exception as e:
+            raise Exception(f"Error submitting deposition {test_entry.copy_dep_id}: {str(e)}") from e
+        finally:
+            await connector.close()
 
 
 def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
@@ -448,14 +574,14 @@ def upload_task(api, test_entry: TestEntry, task: UploadTask, config: Config, st
             # it's a standalone test, so we use the original dep_id
             test_entry.copy_dep_id = test_entry.dep_id
             source_repository = "deposit-ui"
-            unlock_deposition(test_entry.copy_dep_id, config)
+            asyncio.run(unlock_deposition(test_entry.copy_dep_id, config))
 
         status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id)
         _upload_all_files(api=api, test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
         api.process(test_entry.copy_dep_id, **copy_elements)
-        monitor_processing(api, test_entry, status_manager)
+        asyncio.run(monitor_processing(test_entry, config, status_manager))
 
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
@@ -571,7 +697,7 @@ def run_entry_tasks(entry, config, status_manager):
     """Run all tasks for a single entry sequentially."""
     get_entry_info(entry, config, status_manager)
     api = DepositApi(
-       api_key=create_token(config.api.get("orcid"), expiration_days=7), 
+        api_key=create_token(config.api.get("orcid"), expiration_days=7), 
         hostname=config.api.get("base_url"), 
         ssl_verify=False
     )
@@ -590,10 +716,11 @@ def run_entry_tasks(entry, config, status_manager):
             elif task.type == TaskType.COMPARE_REPOS:
                 compare_repos_task(entry, task, config, status_manager)
             elif task.type == TaskType.SUBMIT:
-                submit_task(entry, config, status_manager)
+                asyncio.run(submit_task(entry, config, status_manager))
             else:
                 file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
         except Exception as e:
+            file_logger.error("Error processing task %s for entry %s: %s", task.type, entry.dep_id, e, exc_info=True)
             task.status = TaskStatus.FAILED
             task.error_message = str(e)
             task.execution_time = datetime.now()
@@ -626,15 +753,12 @@ def setup_report_generation(config, output_dir: str = "reports"):
 def main(test_config, generate_report, report_dir):
     """TEST_CONFIG is the path to the test configuration file.
     """
-    global api
-
     if getSiteId() in ["PDBE_PROD"]: # get the production ids from config
         click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
 
     config = Config(test_config)
     test_set = config.get_test_set()
-    api = DepositApi(api_key=create_token(config.api.get("orcid"), expiration_days=7), hostname=config.api.get("base_url"), ssl_verify=False)
 
     report_integration = None
     if generate_report:
