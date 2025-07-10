@@ -509,28 +509,28 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
     overall_success = True
 
     for cr in task.rules:
-        if ":copy:" in task.source:
-            if not test_entry.copy_dep_id:
-                raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
-            task.source = task.source.replace(":copy:", test_entry.copy_dep_id)
-
-        rule = config.get_compare_rule(cr.name)
-        content_type, format = rule.name.split(".")
-
-        copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
-        copy_file_path = str(filesystem.locate(copy_uri))
-
-        test_entry_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
-        if not filesystem.exists(test_entry_uri):
-            error_msg = f"Test entry file {test_entry_uri} not found in local archive."
-            status_manager.track_comparison_result(test_entry, rule.name, False, error_msg)
-            raise FileNotFoundError(error_msg)
-
-        test_entry_file_path = str(filesystem.locate(test_entry_uri))
-
-        status_manager.update_status(test_entry, message=f"Comparing {copy_uri} with {test_entry_uri} using {rule.method}")
-
         try:
+            if ":copy:" in task.source:
+                if not test_entry.copy_dep_id:
+                    raise ValueError("Deposition ID source must be provided for comparison either in config.yaml or as a parameter.")
+                task.source = task.source.replace(":copy:", test_entry.copy_dep_id)
+
+            rule = config.get_compare_rule(cr.name)
+            content_type, format = rule.name.split(".")
+
+            copy_uri = WwPDBResourceURI(task.source).join_file(content_type=content_type, format=format, version=rule.version)
+            copy_file_path = str(filesystem.locate(copy_uri))
+
+            test_entry_uri = WwPDBResourceURI.for_file(repository="tempdep", dep_id=test_entry.dep_id, content_type=content_type, format=format, version=rule.version)
+            if not filesystem.exists(test_entry_uri):
+                error_msg = f"Test entry file {test_entry_uri} not found in local archive."
+                status_manager.track_comparison_result(test_entry, rule.name, False, error_msg)
+                raise FileNotFoundError(error_msg)
+
+            test_entry_file_path = str(filesystem.locate(test_entry_uri))
+
+            status_manager.update_status(test_entry, message=f"Comparing {copy_uri} with {test_entry_uri} using {rule.method}")
+
             comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
             diffs = comparer.get_report()
 
