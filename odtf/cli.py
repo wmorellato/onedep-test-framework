@@ -373,10 +373,12 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
         # standalone testing
         # we need to copy the pdbx_contact_author pickle
         test_entry.copy_dep_id = test_entry.dep_id
-        copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
-        pklpath = Path(__file__).parent / "resources" / "pdbx_contact_author.pkl"
-        file_logger.info("Copying pickle file %s to %s", pklpath, test_pickles_location)
-        shutil.copy(pklpath, copy_pickles_location)
+
+    # copying the test pickle as I was probably sending emails to everyone...
+    copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
+    pklpath = Path(__file__).parent / "resources" / "pdbx_contact_author.pkl"
+    file_logger.info("Copying pickle file %s to %s", pklpath, test_pickles_location)
+    shutil.copy(pklpath, copy_pickles_location)
 
     # writing the submitOK.pkl file
     for ppath in [copy_pickles_location, test_pickles_location]:
