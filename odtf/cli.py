@@ -393,7 +393,7 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
 
     # get the csrftoken from an arbitrary request
     base_url = config.api.get("base_url")
-    timeout = aiohttp.ClientTimeout(total=60)
+    timeout = aiohttp.ClientTimeout(total=180)
     connector = aiohttp.TCPConnector(
         limit=100,
         limit_per_host=10,
