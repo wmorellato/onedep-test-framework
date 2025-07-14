@@ -8,8 +8,6 @@ os.environ["DJANGO_SETTINGS_MODULE"] = "wwpdb.apps.deposit.settings"
 django.setup()
 
 import pickle
-import concurrent.futures
-import requests
 import logging
 import threading
 import time
@@ -17,7 +15,6 @@ import shutil
 import pprint
 from typing import List
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
@@ -31,11 +28,11 @@ from odtf.common import get_file_logger
 from odtf.models import EntryStatus, FileTypeMapping, TestEntry, TaskType, Task, UploadTask, CompareFilesTask, TaskStatus
 from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend
 from odtf.archive import RemoteFetcher, LocalArchive
-from odtf.compare import  comparer_factory
+from odtf.compare import comparer_factory
 from odtf.config import Config
 from odtf.report import TestReportGenerator, TestReportIntegration
+from odtf.aioapi import AsyncDepositApi as DepositApi
 
-from onedep_deposition.deposit_api import DepositApi
 from onedep_deposition.enum import Country, FileType
 from onedep_deposition.models import (DepositError, DepositStatus, EMSubType,
                                       ExperimentType)
@@ -44,7 +41,7 @@ from wwpdb.io.locator.PathInfo import PathInfo
 from wwpdb.apps.deposit.auth.tokens import create_token
 from wwpdb.apps.deposit.main.archive import ArchiveRepository
 from wwpdb.utils.config.ConfigInfo import ConfigInfo, getSiteId
-from wwpdb.utils.config.ConfigInfoApp import (ConfigInfoAppBase)
+from wwpdb.utils.config.ConfigInfoApp import ConfigInfoAppBase
 
 from django.conf import settings
 from django.utils.module_loading import import_string
@@ -58,12 +55,12 @@ ci = ConfigInfo()
 configApp = ConfigInfoAppBase()
 filesystem = FilesystemBackend(pi, content_type_config=Config.CONTENT_TYPE_DICT, format_extension_d=Config.FORMAT_DICT)
 
-for l in ["wwpdb.apps.deposit.main.archive", "onedep_deposition.rest_adapter", "urllib3", "requests", "wwpdb.io.locator.PathInfo", "odtf.report"]:
+for l in ["wwpdb.apps.deposit.main.archive", "urllib3", "requests", "wwpdb.io.locator.PathInfo", "odtf.report"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.CRITICAL)
     logger.propagate = True
 
-for l in ["asyncio"]:
+for l in ["asyncio", "aiohttp"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.WARNING)
     logger.propagate = True
@@ -74,7 +71,7 @@ def parse_voxel_values(filepath):
     Parse a pickle file and extract the first contour_level and pixel_spacing values.
     
     Args:
-        dep_id (str): The deposition ID to locate the pickle file.
+        filepath (str): Path to the pickle file
         
     Returns:
         tuple: (contour_level, pixel_spacing_x/y/z) or None if not found
@@ -92,8 +89,8 @@ def parse_voxel_values(filepath):
             if f'pixel_spacing_{axis}' in item:
                 pixel_spacing = item[f'pixel_spacing_{axis}']['value']
                 break
-    except:
-        file_logger.error("Error reading voxel values from %s", filepath)
+    except Exception as e:
+        file_logger.error("Error reading voxel values from %s: %s", filepath, e)
         return None, None 
     
     return contour_level, pixel_spacing
@@ -107,7 +104,7 @@ def get_cookie_signer(salt="django.core.signing.get_cookie_signer"):
 
 class StatusManager:
     """
-    Minimal thread-safety with your exact logic preserved.
+    Thread-safe status manager for tracking test entry status.
     """
     def __init__(self, test_set: List[TestEntry], callback, report_integration=None):
         self.statuses = {te.dep_id: EntryStatus(arch_dep_id=te.dep_id) for te in test_set}
@@ -162,115 +159,93 @@ class StatusManager:
             )
 
 
-def create_deposition(api, orcid: str, country: Country, etype: ExperimentType, email: str, subtype: EMSubType = None, coordinates: bool = True, related_emdb: str = None, no_map: bool = False):
-    """NOTE: if this code ever moves to a separate package, the deposition
-    will have to be created using a proper HTTP request.
-    """
+async def create_deposition(api: DepositApi, orcid: str, country: Country, etype: ExperimentType, 
+                           email: str, subtype: EMSubType = None, coordinates: bool = True, 
+                           related_emdb: str = None, no_map: bool = False):
+    """Create a deposition using the async API"""
     users = [orcid]
     password = "123456"
 
     if etype == ExperimentType.EM:
-        deposition = api.create_em_deposition(email, users, country, subtype, coordinates, related_emdb, password)
+        return await api.create_em_deposition(email, users, country, subtype, coordinates, related_emdb, password)
     elif etype == ExperimentType.XRAY:
-        deposition = api.create_xray_deposition(email, users, country, password)
+        return await api.create_xray_deposition(email, users, country, password)
     elif etype == ExperimentType.FIBER:
-        deposition = api.create_fiber_deposition(email, users, country, password)
+        return await api.create_fiber_deposition(email, users, country, password)
     elif etype == ExperimentType.NEUTRON:
-        deposition = api.create_neutron_deposition(email, users, country, password)
+        return await api.create_neutron_deposition(email, users, country, password)
     elif etype == ExperimentType.EC:
-        deposition = api.create_ec_deposition(email, users, country, coordinates, password, related_emdb, no_map)
+        return await api.create_ec_deposition(email, users, country, coordinates, password, related_emdb, no_map)
     elif etype == ExperimentType.NMR:
-        deposition = api.create_nmr_deposition(email, users, country, coordinates, password)
+        return await api.create_nmr_deposition(email, users, country, coordinates, password)
     elif etype == ExperimentType.SSNMR:
-        deposition = api.create_ssnmr_deposition(email, users, country, coordinates, password)
+        return await api.create_ssnmr_deposition(email, users, country, coordinates, password)
     else:
         raise ValueError(f"Unknown experiment type: {etype}")
 
-    return deposition
-
 
 async def monitor_processing(test_entry: TestEntry, config: Config, status_manager: StatusManager, timeout_minutes=30):
-    """Monitor processing using direct HTTP calls instead of DepositApi - more efficient async version"""
+    """Monitor processing using the async API"""
     start_time = time.time()
     status = "started"
     sleep_time = 5
     max_sleep = 30
     
-    file_logger.info(f"Starting HTTP-based async monitor_processing for {test_entry.dep_id}")
-    base_url = config.api.get("base_url")
+    file_logger.info(f"Starting async monitor_processing for {test_entry.dep_id}")
     
-    timeout = aiohttp.ClientTimeout(total=30)
-    connector = aiohttp.TCPConnector(
-        limit=100,
-        limit_per_host=10,
-        ttl_dns_cache=300,
-        use_dns_cache=True,
+    # Create API instance for monitoring
+    api = DepositApi(
+        api_key=create_token(config.api.get("orcid"), expiration_days=7),
+        hostname=config.api.get("base_url"),
+        ssl_verify=False
     )
     
-    async with aiohttp.ClientSession(
-        connector=connector,
-        timeout=timeout,
-        connector_owner=False
-    ) as session:
-        try:
-            while status in ("running", "started", "submit"):
-                if time.time() - start_time > timeout_minutes * 60:
-                    raise Exception(f"Processing timeout after {timeout_minutes} minutes for {test_entry.dep_id}")
+    try:
+        while status in ("running", "started", "submit"):
+            if time.time() - start_time > timeout_minutes * 60:
+                raise Exception(f"Processing timeout after {timeout_minutes} minutes for {test_entry.dep_id}")
+            
+            file_logger.debug(f"Checking status for {test_entry.copy_dep_id}, current sleep_time: {sleep_time}")
+            
+            try:
+                response = await api.get_status(test_entry.copy_dep_id)
                 
-                file_logger.debug(f"Checking status for {test_entry.copy_dep_id}, current sleep_time: {sleep_time}")
-                
-                try:
-                    status_url = os.path.join(base_url, "api", "v1", "depositions", test_entry.copy_dep_id, "status")
-                    async with session.get(
-                        url=status_url,
-                        headers = {
-                            'Authorization': f"Bearer {create_token(config.api.get('orcid'), expiration_days=7)}"
-                        },
-                        ssl=False
-                    ) as response:
-                        if response.status != 200:
-                            raise Exception(f"Status check failed: {response.status} - {await response.text()}")
-                        
-                        response_data = await response.json()
-                        
-                        if "status" in response_data:
-                            status = response_data["status"]
-                            details = response_data.get("details", "")
-                        else:
-                            status = response_data.get("status", "error")
-                            details = response_data.get("message", str(response_data))
-                        
-                except asyncio.TimeoutError:
-                    file_logger.error(f"Timeout checking status for {test_entry.copy_dep_id}")
-                    await asyncio.sleep(sleep_time)
-                    sleep_time = min(sleep_time * 1.5, max_sleep)
-                    continue
-                except Exception as e:
-                    file_logger.error(f"HTTP status check failed for {test_entry.copy_dep_id}: {e}")
-                    await asyncio.sleep(sleep_time)
-                    sleep_time = min(sleep_time * 1.5, max_sleep)
-                    continue
-
-                current_status_message = status_manager.get_status(test_entry).message
-                if details == current_status_message:
-                    file_logger.debug(f"No status change for {test_entry.dep_id}, sleeping {sleep_time}s")
-                    await asyncio.sleep(sleep_time)
-                    sleep_time = min(sleep_time * 1.2, max_sleep)
-                    continue
-
-                sleep_time = 5
-                status_manager.update_status(test_entry, status="working", message=details)
-                file_logger.info(f"Status update for {test_entry.dep_id}: {status} - {details}")
-
-                if status == "error":
-                    raise Exception(details)
-
+                if hasattr(response, 'status'):
+                    status = response.status
+                    details = getattr(response, 'details', "")
+                else:
+                    status = "error"
+                    details = getattr(response, 'message', str(response))
+                    
+            except asyncio.TimeoutError:
+                file_logger.error(f"Timeout checking status for {test_entry.copy_dep_id}")
                 await asyncio.sleep(sleep_time)
+                sleep_time = min(sleep_time * 1.5, max_sleep)
+                continue
+            except Exception as e:
+                file_logger.error(f"Status check failed for {test_entry.copy_dep_id}: {e}")
+                await asyncio.sleep(sleep_time)
+                sleep_time = min(sleep_time * 1.5, max_sleep)
+                continue
+
+            current_status_message = status_manager.get_status(test_entry).message
+            if details == current_status_message:
+                file_logger.debug(f"No status change for {test_entry.dep_id}, sleeping {sleep_time}s")
+                await asyncio.sleep(sleep_time)
+                sleep_time = min(sleep_time * 1.2, max_sleep)
+                continue
+
+            sleep_time = 5
+            status_manager.update_status(test_entry, status="working", message=details)
+            file_logger.info(f"Status update for {test_entry.dep_id}: {status} - {details}")
+
+            if status == "error":
+                raise Exception(details)
+
+            await asyncio.sleep(sleep_time)
                 
-        except Exception as e:
-            raise Exception(f"Error monitoring processing for {test_entry.dep_id}: {str(e)}") from e
-        finally:
-            await connector.close()
+    except Exception as e:
+        raise Exception(f"Error monitoring processing for {test_entry.dep_id}: {str(e)}") from e
 
 
 async def unlock_deposition(dep_id: str, config: Config):
@@ -317,8 +292,9 @@ async def unlock_deposition(dep_id: str, config: Config):
             await connector.close()
 
 
-def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manager: StatusManager, source_repository: str = "tempdep"):
-    # this is a separate function just so the `upload_task` doesn't get too complicated
+async def _upload_all_files(api: DepositApi, test_entry: TestEntry, task: UploadTask, 
+                           status_manager: StatusManager, source_repository: str = "tempdep"):
+    """Upload all files for a test entry using async API"""
     arch_pickles = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
     uploaded_files = []
     type_dict = {}
@@ -332,21 +308,41 @@ def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manag
         else:
             type_dict[content_type] += 1
 
-        file_uri = WwPDBResourceURI.for_file(repository=source_repository, dep_id=test_entry.dep_id, content_type=content_type, format=file_format, part_number=type_dict[content_type], version="latest")
+        file_uri = WwPDBResourceURI.for_file(
+            repository=source_repository, 
+            dep_id=test_entry.dep_id, 
+            content_type=content_type, 
+            format=file_format, 
+            part_number=type_dict[content_type], 
+            version="latest"
+        )
 
         try:
             filetype = FileTypeMapping.get_file_type(content_type.replace("-upload", ""), file_format)
             filepath = str(filesystem.locate(file_uri))
             status_manager.update_status(test_entry, message=f"Uploading `{content_type}.{file_format}` from {filepath}")
-            file = api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
+            
+            file = await api.upload_file(test_entry.copy_dep_id, filepath, filetype, overwrite=False)
             uploaded_files.append(file)
 
             if filetype in (FileType.EM_MAP, FileType.EM_ADDITIONAL_MAP, FileType.EM_MASK, FileType.EM_HALF_MAP):
                 if contour_level:
-                    status_manager.update_status(test_entry, message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}")
-                    api.update_metadata(test_entry.copy_dep_id, file.file_id, contour=contour_level, spacing_x=pixel_spacing, spacing_y=pixel_spacing, spacing_z=pixel_spacing, description="Uploaded from test script")
+                    status_manager.update_status(
+                        test_entry, 
+                        message=f"Updating metadata for {f} with contour level {contour_level} and pixel spacing {pixel_spacing}"
+                    )
+                    await api.update_metadata(
+                        test_entry.copy_dep_id, 
+                        file.file_id, 
+                        contour=contour_level, 
+                        spacing_x=pixel_spacing, 
+                        spacing_y=pixel_spacing, 
+                        spacing_z=pixel_spacing, 
+                        description="Uploaded from test script"
+                    )
                 else:
                     raise Exception("Contour level or pixel spacing not found in pickle file. Can't continue automatically.")
+                    
         except ValueError as e:
             status_manager.update_status(test_entry, status="failed", message=f"Error getting file type for {content_type}.{file_format}: {e}")
             raise
@@ -358,6 +354,7 @@ def _upload_all_files(api, test_entry: TestEntry, task: UploadTask, status_manag
 
 
 async def submit_task(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    """Submit a deposition for processing"""
     test_pickles_location = pi.getDirPath(dataSetId=test_entry.dep_id, fileSource="pickles")
 
     if test_entry.copy_dep_id:
@@ -371,13 +368,12 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
                 shutil.copy(source_path, destination_path)
     else:
         # standalone testing
-        # we need to copy the pdbx_contact_author pickle
         test_entry.copy_dep_id = test_entry.dep_id
 
-    # copying the test pickle as I was probably sending emails to everyone...
+    # copying the test pickle
     copy_pickles_location = pi.getDirPath(dataSetId=test_entry.copy_dep_id, fileSource="pickles")
     pklpath = Path(__file__).parent / "resources" / "pdbx_contact_author.pkl"
-    file_logger.info("Copying pickle file %s to %s", pklpath, test_pickles_location)
+    file_logger.info("Copying pickle file %s to %s", pklpath, copy_pickles_location)
     shutil.copy(pklpath, copy_pickles_location)
 
     # writing the submitOK.pkl file
@@ -390,9 +386,8 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
             }, f)
 
     orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
-
-    # get the csrftoken from an arbitrary request
     base_url = config.api.get("base_url")
+    
     timeout = aiohttp.ClientTimeout(total=600)
     connector = aiohttp.TCPConnector(
         limit=100,
@@ -466,6 +461,7 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
 
 
 def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+    """Compare repositories (sync operation)"""
     overall_success = True
 
     try:
@@ -486,7 +482,7 @@ def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status
         comparer = comparer_factory("repository", str(filesystem.locate(test_repo)), str(filesystem.locate(source_repo)))
         diffs = comparer.get_report()
 
-        error_msg = None if diffs else "Comparison failed for repository files"
+        error_msg = None if not diffs else "Comparison failed for repository files"
         status_manager.track_comparison_result(test_entry, "repository", not bool(diffs), pprint.pformat(diffs, indent=2))
         
         if diffs:
@@ -506,6 +502,7 @@ def compare_repos_task(test_entry: TestEntry, task: Task, config: Config, status
 
 
 def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+    """Compare individual files (sync operation)"""
     overall_success = True
 
     for cr in task.rules:
@@ -534,7 +531,7 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
             comparer = comparer_factory(rule.method, test_entry_file_path, copy_file_path)
             diffs = comparer.get_report()
 
-            error_msg = None if diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
+            error_msg = None if not diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
             status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), pprint.pformat(diffs, indent=4))
             
             if diffs:
@@ -551,24 +548,34 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
     status_manager.track_task_result(test_entry, TaskType.COMPARE_FILES, overall_success)
 
 
-def create_dep_task(api, test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+async def create_dep_task(api: DepositApi, test_entry: TestEntry, task: Task, config: Config, status_manager: StatusManager):
+    """Create a deposition (async)"""
     try:
-        exp_type = status_manager.get_status(test_entry).exp_type # hackish
-        exp_subtype = status_manager.get_status(test_entry).exp_subtype # hackish
+        exp_type = status_manager.get_status(test_entry).exp_type
+        exp_subtype = status_manager.get_status(test_entry).exp_subtype
 
         status_manager.update_status(test_entry, status="working", message="Creating test deposition")
         try:
-            copy_dep = create_deposition(api=api, orcid=config.api.get("orcid"), country=Country(config.api.get("country")), etype=exp_type, subtype=exp_subtype, email="wbueno@ebi.ac.uk")
+            copy_dep = await create_deposition(
+                api=api, 
+                orcid=config.api.get("orcid"), 
+                country=Country(config.api.get("country")), 
+                etype=exp_type, 
+                subtype=exp_subtype, 
+                email="wbueno@ebi.ac.uk"
+            )
             test_entry.copy_dep_id = copy_dep.dep_id
+            status_manager.track_task_result(test_entry, TaskType.CREATE, True)
         except Exception as e:
+            status_manager.track_task_result(test_entry, TaskType.CREATE, False, str(e))
             raise Exception(f"Error creating test deposition: {str(e)}") from e
     except Exception as e:
         status_manager.update_status(test_entry, status="failed", message=str(e))
-        status_manager.track_task_result(test_entry, TaskType.CREATE, False, str(e))
         raise
 
 
-def upload_task(api, test_entry: TestEntry, task: UploadTask, config: Config, status_manager: StatusManager):
+async def upload_task(api: DepositApi, test_entry: TestEntry, task: UploadTask, config: Config, status_manager: StatusManager):
+    """Upload files to deposition (async)"""
     source_repository = "tempdep"
 
     try:
@@ -576,14 +583,14 @@ def upload_task(api, test_entry: TestEntry, task: UploadTask, config: Config, st
             # it's a standalone test, so we use the original dep_id
             test_entry.copy_dep_id = test_entry.dep_id
             source_repository = "deposit-ui"
-            asyncio.run(unlock_deposition(test_entry.copy_dep_id, config))
+            await unlock_deposition(test_entry.copy_dep_id, config)
 
         status_manager.update_status(test_entry, copy_dep_id=test_entry.copy_dep_id)
-        _upload_all_files(api=api, test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
+        await _upload_all_files(api=api, test_entry=test_entry, task=task, status_manager=status_manager, source_repository=source_repository)
 
         copy_elements = {"copy_contact": False, "copy_authors": False, "copy_citation": False, "copy_grant": False, "copy_em_exp_data": False}
-        api.process(test_entry.copy_dep_id, **copy_elements)
-        asyncio.run(monitor_processing(test_entry, config, status_manager))
+        await api.process(test_entry.copy_dep_id, **copy_elements)
+        await monitor_processing(test_entry, config, status_manager)
 
         status_manager.track_task_result(test_entry, TaskType.UPLOAD, True)
     except Exception as e:
@@ -593,6 +600,7 @@ def upload_task(api, test_entry: TestEntry, task: UploadTask, config: Config, st
 
 
 def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusManager):
+    """Fetch files from archive (sync operation)"""
     remote = config.get_remote_archive()
     local = LocalArchive(site_id=getSiteId())
     fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
@@ -605,9 +613,7 @@ def fetch_files(test_entry: TestEntry, config: Config, status_manager: StatusMan
 
 
 def get_entry_info(test_entry: TestEntry, config: Config, status_manager: StatusManager):
-    """Part of the main testing pipeline, hence the status_manager here.
-    This should be using the API.
-    """
+    """Get entry information from database (sync operation)"""
     prod_ci = ConfigInfo(siteId=config.remote_archive.site_id)
     prod_db = {
         "host": prod_ci.get("SITE_DB_HOST_NAME"),
@@ -653,9 +659,9 @@ def get_entry_info(test_entry: TestEntry, config: Config, status_manager: Status
                 else:
                     exp_submethod = EMSubType.SPA
             elif 'solution' in exp:
-                exp_method = ExperimentType.SSNMR
-            elif 'solid' in exp:
                 exp_method = ExperimentType.NMR
+            elif 'solid' in exp:
+                exp_method = ExperimentType.SSNMR
             elif 'fiber' in exp:
                 exp_method = ExperimentType.FIBER
             elif 'neutron' in exp:
@@ -695,42 +701,52 @@ def generate_table(status_manager):
     return table
 
 
-def run_entry_tasks(entry, config, status_manager):
-    """Run all tasks for a single entry sequentially."""
-    get_entry_info(entry, config, status_manager)
-    api = DepositApi(
-        api_key=create_token(config.api.get("orcid"), expiration_days=7), 
-        hostname=config.api.get("base_url"), 
-        ssl_verify=False
-    )
+async def run_entry_tasks(entry, config, status_manager):
+    """Run all tasks for a single entry sequentially using async API."""
+    try:
+        # Get entry info (sync operation)
+        get_entry_info(entry, config, status_manager)
+        
+        # Create async API instance
+        api = DepositApi(
+            api_key=create_token(config.api.get("orcid"), expiration_days=7), 
+            hostname=config.api.get("base_url"), 
+            ssl_verify=False
+        )
 
-    if not entry.skip_fetch:
-        fetch_files(entry, config, status_manager)
+        # Fetch files if needed (sync operation)
+        if not entry.skip_fetch:
+            fetch_files(entry, config, status_manager)
 
-    for task in entry.tasks:
-        try:
-            if task.type == TaskType.CREATE:
-                create_dep_task(api, entry, task, config, status_manager)
-            elif task.type == TaskType.UPLOAD:
-                upload_task(api, entry, task, config, status_manager)
-            elif task.type == TaskType.COMPARE_FILES:
-                compare_files_task(entry, task, config, status_manager)
-            elif task.type == TaskType.COMPARE_REPOS:
-                compare_repos_task(entry, task, config, status_manager)
-            elif task.type == TaskType.SUBMIT:
-                asyncio.run(submit_task(entry, config, status_manager))
-            else:
-                file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
-        except Exception as e:
-            file_logger.error("Error processing task %s for entry %s: %s", task.type, entry.dep_id, e, exc_info=True)
-            task.status = TaskStatus.FAILED
-            task.error_message = str(e)
-            task.execution_time = datetime.now()
-            if task.stop_on_failure:
-                status_manager.update_status(entry, status="failed", message=f"Task {task.type} failed: {e}")
-                return
+        # Process tasks
+        for task in entry.tasks:
+            try:
+                if task.type == TaskType.CREATE:
+                    await create_dep_task(api, entry, task, config, status_manager)
+                elif task.type == TaskType.UPLOAD:
+                    await upload_task(api, entry, task, config, status_manager)
+                elif task.type == TaskType.COMPARE_FILES:
+                    compare_files_task(entry, task, config, status_manager)
+                elif task.type == TaskType.COMPARE_REPOS:
+                    compare_repos_task(entry, task, config, status_manager)
+                elif task.type == TaskType.SUBMIT:
+                    await submit_task(entry, config, status_manager)
+                else:
+                    file_logger.warning("Unknown task type %s for entry %s", task.type, entry.dep_id)
+            except Exception as e:
+                file_logger.error("Error processing task %s for entry %s: %s", task.type, entry.dep_id, e, exc_info=True)
+                task.status = TaskStatus.FAILED
+                task.error_message = str(e)
+                task.execution_time = datetime.now()
+                if task.stop_on_failure:
+                    status_manager.update_status(entry, status="failed", message=f"Task {task.type} failed: {e}")
+                    return
 
-    status_manager.update_status(entry, status="finished", message=f"Completed all tasks for entry {entry.dep_id}")
+        status_manager.update_status(entry, status="finished", message=f"Completed all tasks for entry {entry.dep_id}")
+        
+    except Exception as e:
+        file_logger.error("Error processing entry %s: %s", entry.dep_id, e, exc_info=True)
+        status_manager.update_status(entry, status="failed", message=f"Error processing entry: {e}")
 
 
 def setup_report_generation(config, output_dir: str = "reports"):
@@ -748,14 +764,29 @@ def setup_report_generation(config, output_dir: str = "reports"):
     return generator, integration
 
 
+async def run_all_entries(test_set, config, status_manager, max_concurrent=3):
+    """Run all test entries with controlled concurrency"""
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def run_with_semaphore(entry):
+        async with semaphore:
+            await run_entry_tasks(entry, config, status_manager)
+    
+    # Create tasks for all entries
+    tasks = [run_with_semaphore(entry) for entry in test_set]
+    
+    # Run all tasks concurrently with controlled concurrency
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @click.command()
 @click.argument('test_config', type=click.Path(exists=True, dir_okay=False, readable=True), required=True)
 @click.option('--generate-report', is_flag=True, help='Generate HTML test report', default=True)
 @click.option('--report-dir', default="reports", help='Directory for generated reports')
-def main(test_config, generate_report, report_dir):
-    """TEST_CONFIG is the path to the test configuration file.
-    """
-    if getSiteId() in ["PDBE_PROD"]: # get the production ids from config
+@click.option('--max-concurrent', default=3, help='Maximum number of concurrent test entries')
+def main(test_config, generate_report, report_dir, max_concurrent):
+    """TEST_CONFIG is the path to the test configuration file."""
+    if getSiteId() in ["PDBE_PROD"]:  # get the production ids from config
         click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
 
@@ -775,40 +806,37 @@ def main(test_config, generate_report, report_dir):
             click.echo(f"Warning: Could not setup report generation: {e}", err=True)
             generate_report = False
 
-    try:
-        with Live(refresh_per_second=3) as live:
-            def update_callback():
-                """Callback to update the live display"""
+    async def run_tests():
+        """Main async function to run all tests"""
+        try:
+            with Live(refresh_per_second=3) as live:
+                def update_callback():
+                    """Callback to update the live display"""
+                    live.update(generate_table(status_manager))
+
+                status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
                 live.update(generate_table(status_manager))
 
-            status_manager = StatusManager(test_set, callback=update_callback, report_integration=report_integration)
-            live.update(generate_table(status_manager))
+                # Run all entries with controlled concurrency
+                await run_all_entries(test_set, config, status_manager, max_concurrent)
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures = {executor.submit(run_entry_tasks, te, config, status_manager): te.dep_id for te in test_set}
+        except KeyboardInterrupt:
+            click.echo("🚫 Test interrupted by user.", err=True)
+        finally:
+            if generate_report and report_integration:
+                try:
+                    report_path = report_integration.generate_final_report(
+                        test_set, 
+                        status_manager,
+                        output_filename=f"report.html"
+                    )
+                    click.echo(f"📝 Test report generated. Read it in {config.report.get('depui_url')}/report.html")
+                except Exception as e:
+                    click.echo(f"Failed to generate test report: {e}", err=True)
+                    file_logger.error(f"Report generation failed: {e}")
 
-                for future in concurrent.futures.as_completed(futures):
-                    dep_id = futures[future]
-                    try:
-                        future.result()
-                    except Exception as e:
-                        file_logger.error("Error processing entry %s: %s", dep_id, e, exc_info=True)
-                        status_manager.update_status(config.get_test_entry(dep_id=dep_id), status="failed", message=f"Error processing entry ({e})")
-
-    except KeyboardInterrupt:
-        click.echo("🚫 Test interrupted by user.", err=True)
-    finally:
-        if generate_report and report_integration:
-            try:
-                report_path = report_integration.generate_final_report(
-                    test_set, 
-                    status_manager,
-                    output_filename=f"report.html"
-                )
-                click.echo(f"📝 Test report generated. Read it in {config.report.get('depui_url')}/report.html")
-            except Exception as e:
-                click.echo(f"Failed to generate test report: {e}", err=True)
-                file_logger.error(f"Report generation failed: {e}")
+    # Run the async main function
+    asyncio.run(run_tests())
 
 
 if __name__ == '__main__':
