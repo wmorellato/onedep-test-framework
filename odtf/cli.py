@@ -60,7 +60,7 @@ for l in ["wwpdb.apps.deposit.main.archive", "urllib3", "requests", "wwpdb.io.lo
     logger.setLevel(logging.CRITICAL)
     logger.propagate = True
 
-for l in ["asyncio", "aiohttp"]:
+for l in ["asyncio", "aiohttp", "odtf.aioapi"]:
     logger = logging.getLogger(l)
     logger.setLevel(logging.WARNING)
     logger.propagate = True
@@ -199,6 +199,7 @@ async def monitor_processing(test_entry: TestEntry, config: Config, status_manag
         hostname=config.api.get("base_url"),
         ssl_verify=False
     )
+    await api._ensure_adapter()
     
     try:
         while status in ("running", "started", "submit"):
@@ -713,6 +714,7 @@ async def run_entry_tasks(entry, config, status_manager):
             hostname=config.api.get("base_url"), 
             ssl_verify=False
         )
+        await api._ensure_adapter()
 
         # Fetch files if needed (sync operation)
         if not entry.skip_fetch:

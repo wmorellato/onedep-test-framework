@@ -8,7 +8,7 @@ from aiofiles import open as aio_open
 
 from onedep_deposition.models import (
     DepositStatus, Experiment, Deposit, Depositor, 
-    DepositedFile, DepositedFilesSet, DepositError
+    DepositedFile, DepositedFilesSet, DepositError, Response
 )
 from onedep_deposition.enum import Country, EMSubType, FileType
 from onedep_deposition.exceptions import DepositApiException, InvalidDepositSiteException
@@ -18,14 +18,52 @@ from onedep_deposition.decorators import handle_invalid_deposit_site
 class AsyncRestAdapter:
     """Async REST adapter for HTTP requests"""
     
-    def __init__(self, hostname: str, api_key: str, version: str = 'v1', 
-                 ssl_verify: bool = True, logger: Optional[logging.Logger] = None):
-        self.hostname = hostname.rstrip('/')
-        self.api_key = api_key
-        self.version = version
-        self.ssl_verify = ssl_verify
-        self.logger = logger or logging.getLogger(__name__)
+    def __init__(self, hostname: str, api_key: str = '', ver: str = 'v1', 
+                 ssl_verify: bool = True, timeout: int = 300, logger: Optional[logging.Logger] = None):
+        """
+        Constructor for AsyncRestAdapter
+        :param hostname: Normally, api.thecatapi.com
+        :param api_key: (optional) string used for authentication when POSTing or DELETEing
+        :param ver: always v1
+        :param ssl_verify: Normally set to True, but if having SSL/TLS cert validation issues, can turn off with False
+        :param timeout: (optional) Timeout in seconds for API calls
+        :param logger: (optional) If your app has a logger, pass it in here.
+        """
+        self._logger = logger or logging.getLogger(__name__)
+        self._version = ver
+        self._hostname = hostname
+        self.url = "{}/api/{}/".format(hostname, ver)
+        self._api_key = api_key
+        self._ssl_verify = ssl_verify
+        self._timeout = timeout
         self._session: Optional[aiohttp.ClientSession] = None
+        
+        if not ssl_verify:
+            # Disable SSL warnings for aiohttp
+            import ssl
+            self._ssl_context = ssl.create_default_context()
+            self._ssl_context.check_hostname = False
+            self._ssl_context.verify_mode = ssl.CERT_NONE
+        else:
+            self._ssl_context = None
+        
+    @property
+    def hostname(self) -> str:
+        """
+        Getter for hostname
+        :return: hostname
+        """
+        return self._hostname
+
+    @hostname.setter
+    def hostname(self, hostname: str) -> None:
+        """
+        Setter for hostname
+        :param hostname: hostname
+        :return: None
+        """
+        self._hostname = hostname
+        self.url = "{}/api/{}/".format(hostname, self._version)
         
     async def __aenter__(self):
         """Async context manager entry"""
@@ -39,12 +77,13 @@ class AsyncRestAdapter:
     async def _ensure_session(self):
         """Ensure session is created"""
         if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(verify_ssl=self.ssl_verify)
-            timeout = aiohttp.ClientTimeout(total=300)  # 5 minutes timeout
+            connector = aiohttp.TCPConnector(
+                verify_ssl=self._ssl_verify
+            )
+            timeout = aiohttp.ClientTimeout(total=self._timeout)
             self._session = aiohttp.ClientSession(
                 connector=connector,
-                timeout=timeout,
-                headers={'Authorization': f'Bearer {self.api_key}'}
+                timeout=timeout
             )
     
     async def close(self):
@@ -52,71 +91,124 @@ class AsyncRestAdapter:
         if self._session and not self._session.closed:
             await self._session.close()
             
-    def _build_url(self, endpoint: str) -> str:
-        """Build full URL from endpoint"""
-        return f"{self.hostname}/{self.version}/{endpoint}"
-    
-    async def _make_request(self, method: str, endpoint: str, **kwargs) -> dict:
-        """Make HTTP request with error handling"""
+    async def _do(self, http_method: str, endpoint: str, params: Dict = None, 
+                 data: Union[Dict, List] = None, files: Dict = None, content_type: str = "application/json") -> Response:
+        """
+        Private method to perform API calls
+        :param http_method: GET/POST/DELETE
+        :param endpoint: endpoint path
+        :param params: Dictionary with requests params
+        :param data: Dictionary with request data
+        :param files: Files to be uploaded
+        :param content_type Request content type
+        :return: API Response
+        """
         await self._ensure_session()
-        url = self._build_url(endpoint)
+        
+        full_url = self.url + endpoint
+        headers = {
+            'Authorization': f"Bearer {self._api_key}"
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+            
+        log_line_pre = f"method={http_method}, url={full_url}, params={params}"
+        log_line_post = ', '.join((log_line_pre, "success={}, status_code={}, message={}"))
         
         try:
-            async with self._session.request(method, url, **kwargs) as response:
-                if response.status == 404:
-                    raise DepositApiException(f"Resource not found: {endpoint}", 404)
-                elif response.status == 401:
-                    raise DepositApiException("Unauthorized - check API key", 401)
-                elif response.status == 403:
-                    raise DepositApiException("Forbidden - insufficient permissions", 403)
-                elif response.status >= 400:
-                    error_text = await response.text()
-                    raise DepositApiException(f"HTTP {response.status}: {error_text}", response.status)
+            self._logger.debug(msg=log_line_pre)
+            
+            kwargs = {
+                'params': params,
+                'headers': headers,
+                'ssl': self._ssl_context if not self._ssl_verify else None
+            }
+            
+            if files:
+                # For file uploads, use FormData and don't set json content type
+                form_data = aiohttp.FormData()
+                if data:
+                    for key, value in data.items():
+                        form_data.add_field(key, str(value))
                 
-                # Handle redirect responses for invalid deposit sites
-                if response.status in (301, 302, 307, 308):
-                    redirect_url = response.headers.get('Location')
-                    if redirect_url:
-                        raise InvalidDepositSiteException(f"Redirect to: {redirect_url}", redirect_url)
+                for field_name, file_info in files.items():
+                    file_name, file_obj, mime_type = file_info
+                    form_data.add_field(field_name, file_obj, filename=file_name, content_type=mime_type)
                 
-                return await response.json()
+                kwargs['data'] = form_data
+                # Remove Content-Type header for multipart uploads
+                if 'Content-Type' in headers:
+                    del headers['Content-Type']
+            elif data:
+                if 'Content-Type' in headers and headers['Content-Type'] == 'application/json':
+                    kwargs['json'] = data
+                else:
+                    kwargs['data'] = data
+            
+            async with self._session.request(http_method, full_url, **kwargs) as response:
+                if response.status == 204:
+                    # Django is redirecting 204 to OneDep home page
+                    return Response(204)
+                    
+                is_success = 299 >= response.status >= 200
+                log_line = log_line_post.format(is_success, response.status, response.reason)
+                
+                if not is_success:
+                    self._logger.error(msg=log_line)
+                    raise DepositApiException(response.reason, response.status)
+                
+                try:
+                    data_out = await response.json()
+                except Exception as e:
+                    self._logger.error(msg=log_line_post.format(False, None, e))
+                    raise DepositApiException("Bad JSON in response", 502) from e
+                
+                self._logger.debug(msg=log_line)
+                
+                if 'extras' in data_out and 'code' in data_out:
+                    if 'invalid_location' in data_out['code'] and 'base_url' in data_out['extras']:
+                        self._logger.warning(msg=f"Invalid deposit site, expected is {data_out['extras']['base_url']}")
+                        raise InvalidDepositSiteException(data_out['extras']['base_url'])
+                
+                return Response(response.status, response.reason, data_out)
                 
         except aiohttp.ClientError as e:
-            self.logger.error(f"Client error for {method} {url}: {e}")
-            raise DepositApiException(f"Network error: {str(e)}", 500)
+            self._logger.error(msg=(str(e)))
+            raise DepositApiException("Failed to access the API", 403) from e
     
-    async def get(self, endpoint: str, params: Optional[dict] = None) -> dict:
-        """Make GET request"""
-        return await self._make_request('GET', endpoint, params=params)
-    
-    async def post(self, endpoint: str, data: Optional[dict] = None, 
-                   files: Optional[dict] = None, content_type: Optional[str] = "application/json") -> dict:
-        """Make POST request"""
-        kwargs = {}
-        
-        if files:
-            # For file uploads, use FormData
-            form_data = aiohttp.FormData()
-            if data:
-                for key, value in data.items():
-                    form_data.add_field(key, str(value))
-            
-            for field_name, file_info in files.items():
-                file_name, file_obj, mime_type = file_info
-                form_data.add_field(field_name, file_obj, filename=file_name, content_type=mime_type)
-            
-            kwargs['data'] = form_data
-        elif data:
-            if content_type == "application/json":
-                kwargs['json'] = data
-            else:
-                kwargs['data'] = data
-                
-        return await self._make_request('POST', endpoint, **kwargs)
-    
-    async def delete(self, endpoint: str) -> dict:
-        """Make DELETE request"""
-        return await self._make_request('DELETE', endpoint)
+    async def get(self, endpoint: str, params: Dict = None, content_type: str = "application/json") -> Response:
+        """
+        Perform GET requests
+        :param endpoint: endpoint path
+        :param params: Dictionary with requests params
+        :param content_type Request content type
+        :return: API Response
+        """
+        return await self._do(http_method='GET', endpoint=endpoint, params=params, content_type=content_type)
+
+    async def post(self, endpoint: str, params: Dict = None, data: Union[Dict, List] = None, 
+                   files: Dict = None, content_type: str = "application/json") -> Response:
+        """
+        Perform POST requests
+        :param endpoint: endpoint path
+        :param params: Dictionary with requests params
+        :param data: Dictionary with requests data
+        :param files: Files to be uploaded
+        :param content_type Request content type
+        :return: API response
+        """
+        return await self._do(http_method='POST', endpoint=endpoint, params=params, data=data, files=files, content_type=content_type)
+
+    async def delete(self, endpoint: str, params: Dict = None, data: Dict = None, content_type: str = "application/json") -> Response:
+        """
+        Perform DELETE requests
+        :param endpoint: endpoint path
+        :param params: Dictionary with requests params
+        :param data: Dictionary with requests data
+        :param content_type Request content type
+        :return: API response
+        """
+        return await self._do(http_method='DELETE', endpoint=endpoint, params=params, data=data, content_type=content_type)
 
 
 class AsyncDepositApi:
@@ -155,7 +247,7 @@ class AsyncDepositApi:
         if self._rest_adapter is None:
             self._rest_adapter = AsyncRestAdapter(
                 self._hostname, self._api_key, self._version, 
-                self._ssl_verify, self._logger
+                self._ssl_verify, logger=self._logger
             )
             await self._rest_adapter._ensure_session()
     
@@ -176,7 +268,7 @@ class AsyncDepositApi:
         # Create new adapter with new hostname
         self._rest_adapter = AsyncRestAdapter(
             self._hostname, self._api_key, self._version, 
-            self._ssl_verify, self._logger
+            self._ssl_verify, logger=self._logger
         )
         await self._rest_adapter._ensure_session()
 
@@ -212,11 +304,12 @@ class AsyncDepositApi:
         }
         if password:
             data["password"] = password
-            
+
         async def _create():
             response = await self._rest_adapter.post("depositions/new", data=data)
-            response["dep_id"] = response.pop("id")
-            return Deposit(**response)
+            response_data = response.data
+            response_data["dep_id"] = response_data.pop("id")
+            return Deposit(**response_data)
             
         return await self._handle_redirect(_create)
 
@@ -329,8 +422,9 @@ class AsyncDepositApi:
         
         async def _get():
             response = await self._rest_adapter.get(f"depositions/{dep_id}")
-            response['dep_id'] = response.pop('id')
-            return Deposit(**response)
+            response_data = response.data
+            response_data['dep_id'] = response_data.pop('id')
+            return Deposit(**response_data)
             
         return await self._handle_redirect(_get)
 
@@ -344,7 +438,8 @@ class AsyncDepositApi:
         async def _get_all():
             depositions = []
             response = await self._rest_adapter.get("depositions/")
-            for deposition_json in response["items"]:
+            response_data = response.data
+            for deposition_json in response_data["items"]:
                 deposition_json['dep_id'] = deposition_json.pop('id')
                 deposition = Deposit(**deposition_json)
                 depositions.append(deposition)
@@ -363,7 +458,8 @@ class AsyncDepositApi:
         async def _get_users():
             users = []
             response = await self._rest_adapter.get(f"depositions/{dep_id}/users/")
-            for user_json in response:
+            response_data = response.data
+            for user_json in response_data:
                 user_json["user_id"] = user_json.pop("id")
                 user = Depositor(**user_json)
                 users.append(user)
@@ -390,7 +486,8 @@ class AsyncDepositApi:
                     data.append({'orcid': orcid_id})
             
             response = await self._rest_adapter.post(f"depositions/{dep_id}/users/", data=data)
-            for user_json in response:
+            response_data = response.data
+            for user_json in response_data:
                 user_json["user_id"] = user_json.pop("id")
                 users.append(Depositor(**user_json))
             return users
@@ -454,9 +551,10 @@ class AsyncDepositApi:
                 files = {"file": (file_name, file_content, mime_type)}
                 
                 response = await self._rest_adapter.post(f"depositions/{dep_id}/files/", data=data, files=files, content_type="")
-                response["file_type"] = response.pop("type")
-                response["file_id"] = response.pop("id")
-                return DepositedFile(**response)
+                response_data = response.data
+                response_data["file_type"] = response_data.pop("type")
+                response_data["file_id"] = response_data.pop("id")
+                return DepositedFile(**response_data)
                 
         return await self._handle_redirect(_upload)
 
@@ -489,9 +587,10 @@ class AsyncDepositApi:
             }
 
             response = await self._rest_adapter.post(f"depositions/{dep_id}/files/{file_id}/metadata", data=data)
-            response["file_type"] = response.pop("type")
-            response["file_id"] = response.pop("id")
-            return DepositedFile(**response)
+            response_data = response.data
+            response_data["file_type"] = response_data.pop("type")
+            response_data["file_id"] = response_data.pop("id")
+            return DepositedFile(**response_data)
             
         return await self._handle_redirect(_update_metadata)
 
@@ -505,7 +604,8 @@ class AsyncDepositApi:
         
         async def _get_files():
             response = await self._rest_adapter.get(f"depositions/{dep_id}/files/")
-            return DepositedFilesSet(**response)
+            response_data = response.data
+            return DepositedFilesSet(**response_data)
             
         return await self._handle_redirect(_get_files)
 
@@ -534,10 +634,11 @@ class AsyncDepositApi:
         
         async def _get_status():
             response = await self._rest_adapter.get(f"depositions/{dep_id}/status")
+            response_data = response.data
             try:
-                return DepositStatus(**response)
+                return DepositStatus(**response_data)
             except TypeError:
-                return DepositError(**response)
+                return DepositError(**response_data)
                 
         return await self._handle_redirect(_get_status)
 
@@ -580,10 +681,11 @@ class AsyncDepositApi:
                 }
 
             response = await self._rest_adapter.post(f"depositions/{dep_id}/process", data=data)
+            response_data = response.data
             try:
-                return DepositStatus(**response)
+                return DepositStatus(**response_data)
             except TypeError:
-                return DepositError(**response)
+                return DepositError(**response_data)
                 
         return await self._handle_redirect(_process)
 
