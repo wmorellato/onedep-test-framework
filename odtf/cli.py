@@ -247,13 +247,15 @@ async def monitor_processing(test_entry: TestEntry, config: Config, status_manag
                 
     except Exception as e:
         raise Exception(f"Error monitoring processing for {test_entry.dep_id}: {str(e)}") from e
+    finally:
+        await api.close()
 
 
 async def unlock_deposition(dep_id: str, config: Config):
     """Unlock a deposition by sending a POST request to the unlock endpoint."""
     orcid_cookie = get_cookie_signer(salt=settings.AUTH_COOKIE_KEY).sign(config.api.get("orcid"))
 
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=300)
     connector = aiohttp.TCPConnector(
         limit=100,
         limit_per_host=10,
@@ -366,7 +368,11 @@ async def submit_task(test_entry: TestEntry, config: Config, status_manager: Sta
             if file_name.endswith(".pkl"):
                 source_path = os.path.join(test_pickles_location, file_name)
                 destination_path = os.path.join(copy_pickles_location, file_name)
-                shutil.copy(source_path, destination_path)
+
+                try:
+                    shutil.copy(source_path, destination_path)
+                except shutil.SameFileError:
+                    file_logger.warning("Source and destination paths are the same, skipping copy for %s", file_name)
     else:
         # standalone testing
         test_entry.copy_dep_id = test_entry.dep_id
@@ -749,6 +755,8 @@ async def run_entry_tasks(entry, config, status_manager):
     except Exception as e:
         file_logger.error("Error processing entry %s: %s", entry.dep_id, e, exc_info=True)
         status_manager.update_status(entry, status="failed", message=f"Error processing entry: {e}")
+    finally:
+        await api.close()
 
 
 def setup_report_generation(config, output_dir: str = "reports"):
