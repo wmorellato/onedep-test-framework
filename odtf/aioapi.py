@@ -247,7 +247,7 @@ class AsyncDepositApi:
         if self._rest_adapter is None:
             self._rest_adapter = AsyncRestAdapter(
                 self._hostname, self._api_key, self._version, 
-                self._ssl_verify, logger=self._logger
+                self._ssl_verify, logger=self._logger, timeout=1800
             )
             await self._rest_adapter._ensure_session()
     
@@ -268,7 +268,7 @@ class AsyncDepositApi:
         # Create new adapter with new hostname
         self._rest_adapter = AsyncRestAdapter(
             self._hostname, self._api_key, self._version, 
-            self._ssl_verify, logger=self._logger
+            self._ssl_verify, logger=self._logger, timeout=1800
         )
         await self._rest_adapter._ensure_session()
 
