@@ -19,7 +19,7 @@ class AsyncRestAdapter:
     """Async REST adapter for HTTP requests"""
     
     def __init__(self, hostname: str, api_key: str = '', ver: str = 'v1', 
-                 ssl_verify: bool = True, timeout: int = 300, logger: Optional[logging.Logger] = None):
+                 ssl_verify: bool = True, timeout: int = 600, logger: Optional[logging.Logger] = None):
         """
         Constructor for AsyncRestAdapter
         :param hostname: Normally, api.thecatapi.com
