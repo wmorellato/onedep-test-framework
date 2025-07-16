@@ -34,6 +34,16 @@ class TestReportGenerator:
         self.template_dir = Path(template_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+
+        # first unlink everything in the directory
+        for file_path in self.output_dir.glob("*"):
+            if file_path.is_symlink():
+                try:
+                    file_path.unlink()
+                    logger.debug(f"Unlinked existing symlink: {file_path}")
+                except OSError as e:
+                    logger.error(f"Failed to unlink {file_path}: {e}")
+
         
         # Setup Jinja2 environment
         self.env = Environment(
@@ -256,6 +266,7 @@ def update_compare_files_task_from_results(task: CompareFilesTask,
     for rule in task.rules:
         if rule.name in comparison_results:
             result = comparison_results[rule.name]
+            rule.file_list = result.get('links', [])
             if result.get('success', False):
                 rule.status = TaskStatus.SUCCESS
                 rule.error_message = None
@@ -300,16 +311,51 @@ class TestReportIntegration:
         self.report_generator = report_generator
         self.comparison_results = {}  # Store comparison results per entry
     
-    def track_comparison_result(self, dep_id: str, rule_name: str, success: bool, error: str = None):
+    def track_comparison_result(self, dep_id: str, rule_name: str, success: bool, error: str = None, file_paths: list = []):
         """Track comparison results for later report generation"""
         if dep_id not in self.comparison_results:
             self.comparison_results[dep_id] = {}
         
+        links = []
+        if file_paths:
+            links = self.create_symlinks(file_paths)
+        
         self.comparison_results[dep_id][rule_name] = {
             'success': success,
-            'error': error
+            'error': error,
+            'links': links
         }
     
+    def create_symlinks(self, file_list):
+        """
+        Create symlinks for files in the report directory
+        This is useful for linking to logs or other files in the report
+        
+        Args:
+            file_list: List of file paths to create symlinks for
+        """
+        link_files = []
+
+        for file_path in file_list:
+            if not os.path.exists(file_path):
+                logger.warning(f"File {file_path} does not exist, skipping symlink creation")
+                continue
+            
+            filename = Path(file_path).name
+            link_files.append(filename)
+            symlink_name = self.report_generator.output_dir / filename
+            try:
+                if symlink_name.exists():
+                    logger.warning(f"Symlink {symlink_name} already exists, skipping")
+                    continue
+                os.symlink(file_path, symlink_name)
+                logger.info(f"Created symlink: {symlink_name} -> {file_path}")
+            except OSError as e:
+                logger.error(f"Failed to create symlink {symlink_name}: {e}")
+        
+        return link_files
+
+
     def update_test_entries_from_status_manager(self, 
                                                test_entries: List[TestEntry], 
                                                status_manager) -> List[TestEntry]:

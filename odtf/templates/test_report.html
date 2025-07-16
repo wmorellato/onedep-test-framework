@@ -272,6 +272,11 @@
                                                     
                                                     <div class="flex-grow-1">
                                                         <span class="fw-medium">{{ rule.name }}</span>
+                                                        {% if rule.file_list %}
+                                                            {% for file in rule.file_list %}
+                                                            <a href="{{ file }}" class="badge bg-secondary ms-2" target="_blank">{{ file }}</a>
+                                                            {% endfor %}
+                                                        {% endif %}
                                                         {% if rule.method %}
                                                         <small class="text-muted ms-2">({{ rule.method }})</small>
                                                         {% endif %}

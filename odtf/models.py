@@ -111,8 +111,9 @@ class CompareRule:
     method: str
     version: str
     status: TaskStatus = TaskStatus.PENDING
-    error_message: Optional[str] = None
     categories: List[str] = field(default_factory=list)
+    error_message: Optional[str] = None
+    file_list: Optional[List[str]] = field(default_factory=list)
 
 
 @dataclass

@@ -4,7 +4,7 @@ api:
   country: United Kingdom
 
 report:
-  depui_url: https://local.rcsb.rutgers.edu:12000/
+  depui_url: https://local.rcsb.rutgers.edu:12000
 
 remote_archive:
   host: localhost
@@ -52,7 +52,7 @@ compare_rules:
     version: latest
 
 test_set:
-  # testing upload and reupload, no submission, no file comparison
+  # # testing upload and reupload, no submission, no file comparison
   # D_8233000253:
   #   skip_fetch: True
   #   tasks:
@@ -64,33 +64,36 @@ test_set:
   #         - model.pdbx
 
   # comparing repositories and files
-  # D_8233000141:
-  #   skip_fetch: True
-  #   tasks:
-  #     - compare_repos:
-  #       source: wwpdb://deposit-ui/D_8233000253/
-  #     - compare_files:
-  #         source: wwpdb://deposit-ui/D_8233000253/
-  #         rules:
-  #           - model.pdbx
-
-  D_8233000142: # em single particle
+  D_8233000141:
+    skip_fetch: True
     tasks:
-      - create # must ALWAYS come before upload. Otherwise, weird things happen 
-      - upload:
-        files:
-          - model.pdbx
-          - em-volume.map
-          - em-half-volume.map
-          - em-half-volume.map
-          - img-emdb.jpg
+      - compare_repos:
+        source: wwpdb://deposit-ui/D_8233000253/
       - compare_files:
-        source: wwpdb://deposit-ui/:copy:/
+        source: wwpdb://deposit-ui/D_8233000253/
         rules:
+          - model.pdbx
           - model.pdbx
           - model-upload.pdbx
           - model-upload-convert.pdbx
-          - mapfix-header-report.json
-      - submit
-      - compare_repos:
-        source: wwpdb://deposit-ui/:copy:/
+
+  # D_8233000142: # em single particle
+  #   tasks:
+  #     - create # must ALWAYS come before upload. Otherwise, weird things happen 
+  #     - upload:
+  #       files:
+  #         - model.pdbx
+  #         - em-volume.map
+  #         - em-half-volume.map
+  #         - em-half-volume.map
+  #         - img-emdb.jpg
+  #     - compare_files:
+  #       source: wwpdb://deposit-ui/:copy:/
+  #       rules:
+  #         - model.pdbx
+  #         - model-upload.pdbx
+  #         - model-upload-convert.pdbx
+  #         - mapfix-header-report.json
+  #     - submit
+  #     - compare_repos:
+  #       source: wwpdb://deposit-ui/:copy:/

@@ -106,7 +106,7 @@ class StatusManager:
     """
     Thread-safe status manager for tracking test entry status.
     """
-    def __init__(self, test_set: List[TestEntry], callback, report_integration=None):
+    def __init__(self, test_set: List[TestEntry], callback, report_integration: TestReportIntegration = None):
         self.statuses = {te.dep_id: EntryStatus(arch_dep_id=te.dep_id) for te in test_set}
         self.callback = callback
         self._lock = threading.RLock()
@@ -151,11 +151,11 @@ class StatusManager:
                 task.execution_time = datetime.now()
                 break
     
-    def track_comparison_result(self, test_entry: TestEntry, rule_name: str, success: bool, error_message: str = None):
+    def track_comparison_result(self, test_entry: TestEntry, rule_name: str, success: bool, error_message: str = None, file_paths: list = []):
         """Track comparison rule results"""
         if self.report_integration:
             self.report_integration.track_comparison_result(
-                test_entry.dep_id, rule_name, success, error_message
+                test_entry.dep_id, rule_name, success, error_message, file_paths
             )
 
 
@@ -539,7 +539,7 @@ def compare_files_task(test_entry: TestEntry, task: Task, config: Config, status
             diffs = comparer.get_report()
 
             error_msg = None if not diffs else f"Comparison failed for {content_type}.{format} using {rule.method}"
-            status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), pprint.pformat(diffs, indent=4))
+            status_manager.track_comparison_result(test_entry, rule.name, not bool(diffs), pprint.pformat(diffs, indent=4), [copy_file_path, test_entry_file_path])
             
             if diffs:
                 overall_success = False
@@ -809,7 +809,7 @@ def main(test_config, generate_report, report_dir, max_concurrent):
             webapps_dir = ci.get("TOP_WWPDB_WEBAPPS_DIR")
             _, report_integration = setup_report_generation(
                 config=config,
-                output_dir=os.path.join(webapps_dir, "htdocs")
+                output_dir=os.path.join(webapps_dir, "htdocs", "reports")
             )
             click.echo(f"Report generation enabled. Reports will be saved to: {report_dir}")
         except Exception as e:
@@ -840,7 +840,7 @@ def main(test_config, generate_report, report_dir, max_concurrent):
                         status_manager,
                         output_filename=f"report.html"
                     )
-                    click.echo(f"📝 Test report generated. Read it in {config.report.get('depui_url')}/report.html")
+                    click.echo(f"📝 Test report generated. Read it in {config.report.get('depui_url')}/reports/report.html")
                 except Exception as e:
                     click.echo(f"Failed to generate test report: {e}", err=True)
                     file_logger.error(f"Report generation failed: {e}")
