@@ -67,6 +67,11 @@ test_set:
   D_8233000141:
     skip_fetch: True
     tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
       - compare_repos:
         source: wwpdb://deposit-ui/D_8233000253/
       - compare_files:
@@ -77,23 +82,20 @@ test_set:
           - model-upload.pdbx
           - model-upload-convert.pdbx
 
-  # D_8233000142: # em single particle
-  #   tasks:
-  #     - create # must ALWAYS come before upload. Otherwise, weird things happen 
-  #     - upload:
-  #       files:
-  #         - model.pdbx
-  #         - em-volume.map
-  #         - em-half-volume.map
-  #         - em-half-volume.map
-  #         - img-emdb.jpg
-  #     - compare_files:
-  #       source: wwpdb://deposit-ui/:copy:/
-  #       rules:
-  #         - model.pdbx
-  #         - model-upload.pdbx
-  #         - model-upload-convert.pdbx
-  #         - mapfix-header-report.json
-  #     - submit
-  #     - compare_repos:
-  #       source: wwpdb://deposit-ui/:copy:/
+  D_8233000142: # em single particle
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
+      - upload:
+        files:
+          - model.pdbx
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json

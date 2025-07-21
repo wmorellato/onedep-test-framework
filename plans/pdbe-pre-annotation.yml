@@ -44,8 +44,38 @@ compare_rules:
   model-aux.pdbx:
     method: cifdiff
     version: latest
+  tom-complex-report.txt:
+    method: text
+    version: latest
+  nmr-data-str.pdbx:
+    method: cifdiff
+    version: latest
+  nmr-data-nef-report.json:
+    method: jsondiff
+    version: latest
+  nmr-data-config.json:
+    method: jsondiff
+    version: latest
+  nmr-data-nef.nmr-star:
+    method: text
+    version: latest
 
 test_set:
+  D_1292123393: # xray
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+          - tom-complex-report.txt
   D_1292133558: # em single particle
     tasks:
       - create # must ALWAYS come before upload. Otherwise, weird things happen 
@@ -62,7 +92,22 @@ test_set:
           - model.pdbx
           - model-upload-convert.pdbx
           - mapfix-header-report.json
-      - submit
+  D_1292131353: # unified nmr
+    tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - nmr-data-nef.nmr-star
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+          - nmr-data-str.pdbx
+          - nmr-data-nef-report.json
+          - nmr-data-config.json
+          - nmr-data-nef.nmr-star
   D_1292128033: # ssnmr
     tasks:
       - create # must ALWAYS come before upload. Otherwise, weird things happen
@@ -76,26 +121,6 @@ test_set:
         rules:
           - model.pdbx
           - model-upload-convert.pdbx
-      - submit
-  D_1292123393: # xray
-    tasks:
-      - create # must ALWAYS come before upload. Otherwise, weird things happen
-      - upload:
-        files:
-          - model.pdbx
-          - structure-factors.pdbx
-      - compare_files:
-        source: wwpdb://deposit-ui/:copy:/
-        rules:
-          - model.pdbx
-          - structure-factors.pdbx
-          - model-aux.pdbx
-          - model-issues-report.json
-      - submit
-      - compare_files:                  # comparre files again after submission
-        source: wwpdb://archive/:copy:/
-        rules:
-          - model.pdbx
   D_1292137346: # xray (sf in mtz format)
     tasks:
       - create # must ALWAYS come before upload. Otherwise, weird things happen
@@ -111,4 +136,3 @@ test_set:
           - model-aux.pdbx
           - model-issues-report.json
           - structure-factor-report.json
-      - submit

@@ -4,6 +4,7 @@ import json
 import hashlib
 import subprocess
 from abc import ABC
+from difflib import unified_diff
 
 from deepdiff import DeepDiff
 
@@ -42,6 +43,26 @@ class HashComparer(FileComparer):
             return hasher.hexdigest()
 
         return calculate_hash(self.file1) == calculate_hash(self.file2)
+
+
+class TextComparer(FileComparer):
+    def compare(self) -> bool:
+        """
+        Compare files based on their content.
+        """
+        with open(self.file1, 'r') as f1, open(self.file2, 'r') as f2:
+            content1 = f1.read()
+            content2 = f2.read()
+        return content1 == content2
+
+    def get_report(self) -> str:
+        """
+        Get a unified diff report of the differences found during comparison.
+        """
+        with open(self.file1, 'r') as f1, open(self.file2, 'r') as f2:
+            content1 = f1.readlines()
+            content2 = f2.readlines()
+        return ''.join(unified_diff(content1, content2, fromfile=self.file1, tofile=self.file2))
 
 
 class CIFComparer(FileComparer):
@@ -148,7 +169,9 @@ def comparer_factory(comparison_type: str, file1: str, file2: str) -> FileCompar
     """
     Factory method to create the appropriate comparer based on the comparison type.
     """
-    if comparison_type == "hash":
+    if comparison_type == "text":
+        return TextComparer(file1, file2)
+    elif comparison_type == "hash":
         return HashComparer(file1, file2)
     elif comparison_type == "cifdiff":
         return CIFComparer(file1, file2)
