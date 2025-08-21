@@ -177,25 +177,31 @@ class RemoteFetcher:
 
 
 @click.command()
-@click.argument('remote_site_id')
+@click.argument('remote_site')
 @click.argument('local_site_id')
 @click.argument('dep_id')
-def sync_data(remote_site_id, local_site_id, dep_id):
+def sync_data(remote_site, local_site, dep_id):
     """
     Sync data between remote and local sites for a given deposition ID.
 
     Arguments:
-        remote_site_id: ID of the remote site.
-        local_site_id: ID of the local site.
+        remote_site: ID of the remote site.
+        local_site: ID of the local site.
         dep_id: Deposition ID.
     """
     # Example usage of the arguments
-    click.echo(f"Syncing data from remote site {remote_site_id} to local site {local_site_id} for deposition {dep_id}")
-    fetcher = RemoteFetcher(remote_site_id, local_site_id, cache_size=10, force=False)
+    ruser, rhost, rsite_id, rkey = remote_site.split(':')
+    remote = RemoteArchive(host=rhost, user=ruser, site_id=rsite_id, key_file=rkey)
+    local = LocalArchive(site_id=local_site)
+
+    click.echo(f"Syncing data from remote site {remote} to local site {local} for deposition {dep_id}")
+    fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
+
     try:
         fetcher.fetch_repository(dep_id, repository=ArchiveRepository.DEPOSIT.value)
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
+
 
 if __name__ == '__main__':
     sync_data()
