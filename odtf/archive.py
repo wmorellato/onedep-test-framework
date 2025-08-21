@@ -6,7 +6,6 @@ import subprocess
 from typing import List
 
 from wwpdb.io.locator.PathInfo import PathInfo
-from wwpdb.apps.deposit.main.archive import ArchiveRepository
 
 from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend
 from odtf.models import RemoteArchive, LocalArchive
@@ -198,7 +197,7 @@ def sync_data(remote_site, local_site, dep_id):
     fetcher = RemoteFetcher(remote, local, cache_size=10, force=False)
 
     try:
-        fetcher.fetch_repository(dep_id, repository=ArchiveRepository.DEPOSIT.value)
+        fetcher.fetch_repository(dep_id, repository="deposit")
     except Exception as e:
         raise Exception("Error fetching files from archive") from e
 
