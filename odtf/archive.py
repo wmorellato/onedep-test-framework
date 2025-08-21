@@ -1,14 +1,14 @@
 import os
 import shutil
+import click
 import subprocess
 
-from dataclasses import dataclass
-from typing import List, Dict, Any, List, Union
-from pathlib import Path
+from typing import List
 
 from wwpdb.io.locator.PathInfo import PathInfo
+from wwpdb.apps.deposit.main.archive import ArchiveRepository
 
-from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend, FileNameBuilder
+from odtf.wwpdb_uri import WwPDBResourceURI, FilesystemBackend
 from odtf.models import RemoteArchive, LocalArchive
 from odtf.common import get_file_logger
 from odtf.config import Config
@@ -174,3 +174,28 @@ class RemoteFetcher:
         rsync_command = self._build_rsync_command(remote_pickles_path, local_pickles_path)
         file_logger.debug("Running command %s", ' '.join(rsync_command))
         subprocess.run(rsync_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@click.command()
+@click.argument('remote_site_id')
+@click.argument('local_site_id')
+@click.argument('dep_id')
+def sync_data(remote_site_id, local_site_id, dep_id):
+    """
+    Sync data between remote and local sites for a given deposition ID.
+
+    Arguments:
+        remote_site_id: ID of the remote site.
+        local_site_id: ID of the local site.
+        dep_id: Deposition ID.
+    """
+    # Example usage of the arguments
+    click.echo(f"Syncing data from remote site {remote_site_id} to local site {local_site_id} for deposition {dep_id}")
+    fetcher = RemoteFetcher(remote_site_id, local_site_id, cache_size=10, force=False)
+    try:
+        fetcher.fetch_repository(dep_id, repository=ArchiveRepository.DEPOSIT.value)
+    except Exception as e:
+        raise Exception("Error fetching files from archive") from e
+
+if __name__ == '__main__':
+    sync_data()
