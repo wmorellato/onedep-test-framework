@@ -177,7 +177,7 @@ class RemoteFetcher:
 
 @click.command()
 @click.argument('remote_site')
-@click.argument('local_site_id')
+@click.argument('local_site')
 @click.argument('dep_id')
 def sync_data(remote_site, local_site, dep_id):
     """
