@@ -179,6 +179,7 @@ class RemoteFetcher:
 @click.argument('remote_site')
 @click.argument('local_site')
 @click.argument('dep_id')
+@click.option('-f', '--force', is_flag=True, help='Force re-fetching of data even if it exists locally.')
 def sync_data(remote_site, local_site, dep_id):
     """
     Sync data between remote and local sites for a given deposition ID.
