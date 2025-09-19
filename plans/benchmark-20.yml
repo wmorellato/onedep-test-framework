@@ -1,0 +1,371 @@
+api:
+  base_url: https://onedep-ann-prod-001:12000/deposition
+  orcid: 0000-0002-5109-8728
+  country: United Kingdom
+
+report:
+  depui_url: https://onedep-ann-prod-001.wwpdb.org:12000/
+
+remote_archive:
+  host: pdb-002.ebi.ac.uk
+  user: w3_pdb05
+  site_id: PDBE_PROD
+
+compare_rules:
+  model.pdbx:
+    method: cifdiff
+    version: latest
+    categories:
+      - pdbx_contact_author
+  model-upload.pdbx:
+    method: cifdiff
+    version: original
+  model-upload-convert.pdbx:
+    method: cifdiff
+    version: latest
+  mapfix-header-report.json:
+    method: jsondiff
+    version: latest
+  structure-factors.pdbx:
+    method: cifdiff
+    version: latest
+  structure-factor-report.json:
+    method: jsondiff
+    version: latest
+  chem-comp-assign.pdbx:
+    method: cifdiff
+    version: latest
+  assembly-model.pdbx:
+    method: cifdiff
+    version: latest
+  model-issues-report.json:
+    method: jsondiff
+    version: latest
+  model-aux.pdbx:
+    method: cifdiff
+    version: latest
+  tom-complex-report.txt:
+    method: text
+    version: latest
+  nmr-data-str.pdbx:
+    method: cifdiff
+    version: latest
+  nmr-data-nef-report.json:
+    method: jsondiff
+    version: latest
+  nmr-data-config.json:
+    method: jsondiff
+    version: latest
+  nmr-data-nef.nmr-star:
+    method: text
+    version: latest
+
+test_set:
+  D_1292123393: # xray
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+          - tom-complex-report.txt
+      - submit
+  D_1292133558: # em single particle
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
+      - upload:
+        files:
+          - model.pdb
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+          - em-mask-volume.map
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+  D_1292131353: # unified nmr
+    tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - nmr-data-nef.nmr-star
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292128033: # ssnmr
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - nmr-chemical-shifts.nmr-star
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - model.pdb
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292137346: # xray (sf in mtz format)
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.mtz
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - structure-factor-report.json
+      - submit
+  D_1292123393: # xray
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+          - tom-complex-report.txt
+      - submit
+  D_1292133558: # em single particle
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
+      - upload:
+        files:
+          - model.pdb
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+          - em-mask-volume.map
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+  D_1292131353: # unified nmr
+    tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - nmr-data-nef.nmr-star
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292128033: # ssnmr
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - nmr-chemical-shifts.nmr-star
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - model.pdb
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292137346: # xray (sf in mtz format)
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.mtz
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - structure-factor-report.json
+      - submit
+  D_1292123393: # xray
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+          - tom-complex-report.txt
+      - submit
+  D_1292133558: # em single particle
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
+      - upload:
+        files:
+          - model.pdb
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+          - em-mask-volume.map
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+  D_1292131353: # unified nmr
+    tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - nmr-data-nef.nmr-star
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292128033: # ssnmr
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - nmr-chemical-shifts.nmr-star
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - model.pdb
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292137346: # xray (sf in mtz format)
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.mtz
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - structure-factor-report.json
+      - submit
+  D_1292123393: # xray
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.pdbx
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - model-aux.pdbx
+          - model-issues-report.json
+          - tom-complex-report.txt
+      - submit
+  D_1292133558: # em single particle
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen 
+      - upload:
+        files:
+          - model.pdb
+          - em-volume.map
+          - em-half-volume.map
+          - em-half-volume.map
+          - img-emdb.jpg
+          - em-mask-volume.map
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+          - mapfix-header-report.json
+      - submit
+  D_1292131353: # unified nmr
+    tasks:
+      - create
+      - upload:
+        files:
+          - model.pdbx
+          - nmr-data-nef.nmr-star
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292128033: # ssnmr
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - nmr-chemical-shifts.nmr-star
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - nmr-restraints.cns
+          - model.pdb
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - model-upload-convert.pdbx
+      - submit
+  D_1292137346: # xray (sf in mtz format)
+    tasks:
+      - create # must ALWAYS come before upload. Otherwise, weird things happen
+      - upload:
+        files:
+          - model.pdbx
+          - structure-factors.mtz
+      - compare_files:
+        source: wwpdb://deposit-ui/:copy:/
+        rules:
+          - model.pdbx
+          - structure-factors.pdbx
+          - structure-factor-report.json
+      - submit

@@ -3,6 +3,7 @@ import re
 import django
 import asyncio
 import aiohttp
+import time
 
 os.environ["DJANGO_SETTINGS_MODULE"] = "wwpdb.apps.deposit.settings"
 django.setup()
@@ -796,6 +797,7 @@ async def run_all_entries(test_set, config, status_manager, max_concurrent=3):
 @click.option('--max-concurrent', default=3, help='Maximum number of concurrent test entries')
 def main(test_config, generate_report, report_dir, max_concurrent):
     """TEST_CONFIG is the path to the test configuration file."""
+    start_time = time.perf_counter()  # Start measuring time
     if getSiteId() in ["PDBE_PROD"]:  # get the production ids from config
         click.echo("This command is not allowed on production sites. Exiting.", err=True)
         return
@@ -847,6 +849,10 @@ def main(test_config, generate_report, report_dir, max_concurrent):
 
     # Run the async main function
     asyncio.run(run_tests())
+
+    end_time = time.perf_counter()  # End measuring time
+    elapsed_time = end_time - start_time
+    click.echo(f"⏱️ Execution time: {elapsed_time:.2f} seconds")
 
 
 if __name__ == '__main__':
